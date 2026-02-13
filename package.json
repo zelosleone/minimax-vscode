@@ -1,0 +1,105 @@
+{
+  "name": "minimax-vscode",
+  "displayName": "MiniMax AI",
+  "description": "MiniMax AI language model provider for VSCode - Integrate MiniMax's AI coding capabilities into VSCode using the Language Model Chat Provider API",
+  "version": "1.0.0",
+  "publisher": "denizhandaklr",
+  "license": "MIT",
+  "icon": "icon/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zelosleone/minimax-vscode"
+  },
+  "main": "./out/extension.js",
+  "engines": {
+    "vscode": "^1.109.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "keywords": [
+    "ai",
+    "minimax",
+    "language model",
+    "chat",
+    "coding",
+    "copilot"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "MiniMax",
+      "properties": {
+        "minimax.visibleModels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "MiniMax-M2.5",
+              "MiniMax-M2.1",
+              "MiniMax-M2"
+            ]
+          },
+          "default": [
+            "MiniMax-M2.5",
+            "MiniMax-M2.1",
+            "MiniMax-M2"
+          ],
+          "uniqueItems": true,
+          "scope": "application",
+          "markdownDescription": "Controls which MiniMax models appear in the model picker."
+        }
+      }
+    },
+    "languageModelChatProviders": [
+      {
+        "vendor": "minimax",
+        "displayName": "MiniMax AI",
+        "configuration": {
+          "properties": {
+            "apiKey": {
+              "type": "string",
+              "secret": true,
+              "title": "API Key",
+              "description": "API key for MiniMax AI"
+            }
+          },
+          "required": [
+            "apiKey"
+          ]
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "minimax-vscode.setApiKey",
+        "title": "MiniMax: Set API Key"
+      },
+      {
+        "command": "minimax-vscode.clearApiKey",
+        "title": "MiniMax: Clear API Key"
+      },
+      {
+        "command": "minimax-vscode.manage",
+        "title": "MiniMax: Manage Provider"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "node ./out/test/runTest.js"
+  },
+  "dependencies": {
+    "openai": "^6.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "1.108.1",
+    "typescript": "^5.3.0"
+  }
+}
