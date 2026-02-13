@@ -1,8 +1,5 @@
 import * as vscode from "vscode";
-import {
-  MiniMaxClient,
-  MiniMaxError,
-} from "../api/MiniMaxClient";
+import { MiniMaxClient, MiniMaxError } from "../api/MiniMaxClient";
 import { MiniMaxAuthentication } from "./MiniMaxAuthentication";
 import { TokenCounter } from "../utils/TokenCounter";
 import {
@@ -442,7 +439,7 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
         ({
           id: model.id,
           name: model.name,
-          detail: "Official",
+          detail: "Coding Plan",
           family: model.id,
           version: "1.0",
           maxInputTokens: model.contextLength,
@@ -460,7 +457,9 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
       return SUPPORTED_MODELS;
     }
 
-    const configuredIds = new Set(raw.filter((value): value is string => typeof value === "string"));
+    const configuredIds = new Set(
+      raw.filter((value): value is string => typeof value === "string"),
+    );
     const visibleModels = SUPPORTED_MODELS.filter((model) => configuredIds.has(model.id));
     return visibleModels.length > 0 ? visibleModels : SUPPORTED_MODELS;
   }
@@ -497,7 +496,9 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
         this.readNonEmptyString(candidate.thinking_id);
 
       const metadata =
-        candidate.metadata && typeof candidate.metadata === "object" && !Array.isArray(candidate.metadata)
+        candidate.metadata &&
+        typeof candidate.metadata === "object" &&
+        !Array.isArray(candidate.metadata)
           ? (candidate.metadata as Readonly<Record<string, unknown>>)
           : undefined;
 

@@ -2,7 +2,7 @@
   "name": "minimax-vscode",
   "displayName": "MiniMax AI",
   "description": "MiniMax AI language model provider for VSCode - Integrate MiniMax's AI coding capabilities into VSCode using the Language Model Chat Provider API",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "denizhandaklr",
   "license": "MIT",
   "icon": "icon/icon.png",
