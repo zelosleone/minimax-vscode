@@ -442,6 +442,7 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
         ({
           id: model.id,
           name: model.name,
+          detail: "Official",
           family: model.id,
           version: "1.0",
           maxInputTokens: model.contextLength,
