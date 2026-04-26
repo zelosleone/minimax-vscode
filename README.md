@@ -47,9 +47,13 @@ Set `minimax.visibleModels` in settings to control which MiniMax models appear i
 
 | Model | Context Length |
 |-------|---------------|
+| MiniMax-M2.7 | 204.8K tokens |
+| MiniMax-M2.7-highspeed | 204.8K tokens |
 | MiniMax-M2.5 | 204.8K tokens |
+| MiniMax-M2.5-highspeed | 204.8K tokens |
 | MiniMax-M2.1 | 204.8K tokens |
 | MiniMax-M2 | 204.8K tokens |
+| MiniMax-M2-her | 204.8K tokens |
 
 ## Usage
 
