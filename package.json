@@ -1,8 +1,8 @@
 {
   "name": "minimax-vscode",
-  "displayName": "MiniMax AI",
-  "description": "MiniMax AI language model provider for VSCode - Integrate MiniMax's AI coding capabilities into VSCode using the Language Model Chat Provider API",
-  "version": "1.0.2",
+  "displayName": "MiniMax (coding)",
+  "description": "Language model provider for GitHub Copilot in VS Code: use MiniMax text models for programming with a Token Plan API key. Does not add speech, video, or image generation APIs.",
+  "version": "1.1.0",
   "publisher": "denizhandaklr",
   "license": "MIT",
   "icon": "icon/icon.png",
@@ -12,7 +12,7 @@
   },
   "main": "./out/extension.js",
   "engines": {
-    "vscode": "^1.109.0"
+    "vscode": "^1.111.0"
   },
   "categories": [
     "AI",
@@ -21,13 +21,18 @@
   "keywords": [
     "ai",
     "minimax",
+    "minimax m2.7",
+    "token plan",
     "language model",
+    "github copilot",
     "chat",
-    "coding",
-    "copilot"
+    "coding"
   ],
   "activationEvents": [
     "onStartupFinished"
+  ],
+  "enabledApiProposals": [
+    "languageModelThinkingPart"
   ],
   "contributes": {
     "configuration": {
@@ -43,8 +48,8 @@
               "MiniMax-M2.5",
               "MiniMax-M2.5-highspeed",
               "MiniMax-M2.1",
-              "MiniMax-M2",
-              "MiniMax-M2-her"
+              "MiniMax-M2.1-highspeed",
+              "MiniMax-M2"
             ]
           },
           "default": [
@@ -53,26 +58,27 @@
             "MiniMax-M2.5",
             "MiniMax-M2.5-highspeed",
             "MiniMax-M2.1",
-            "MiniMax-M2",
-            "MiniMax-M2-her"
+            "MiniMax-M2.1-highspeed",
+            "MiniMax-M2"
           ],
           "uniqueItems": true,
           "scope": "application",
-          "markdownDescription": "Controls which MiniMax models appear in the model picker."
+          "markdownDescription": "Programming text models (M2 / M2.1 / M2.5 / M2.7) for Token Plan. Order matches [MiniMax M2.7 for AI coding](https://platform.minimax.io/docs/guides/text-ai-coding-tools). Role-play (M2-her) is not included."
         }
       }
     },
     "languageModelChatProviders": [
       {
         "vendor": "minimax",
-        "displayName": "MiniMax AI",
+        "displayName": "MiniMax (Token Plan)",
         "configuration": {
           "properties": {
             "apiKey": {
               "type": "string",
               "secret": true,
-              "title": "API Key",
-              "description": "API key for MiniMax AI"
+              "title": "API key",
+              "group": "navigation",
+              "description": "MiniMax Token Plan API key from platform.minimax.io (Account / Token Plan)."
             }
           },
           "required": [
@@ -80,26 +86,14 @@
           ]
         }
       }
-    ],
-    "commands": [
-      {
-        "command": "minimax-vscode.setApiKey",
-        "title": "MiniMax: Set API Key"
-      },
-      {
-        "command": "minimax-vscode.clearApiKey",
-        "title": "MiniMax: Clear API Key"
-      },
-      {
-        "command": "minimax-vscode.manage",
-        "title": "MiniMax: Manage Provider"
-      }
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run build",
+    "compile": "tsc -p ./ --noEmit",
+    "build": "node esbuild.mjs --production",
+    "watch:esbuild": "node esbuild.mjs --watch",
+    "watch:tsc": "tsc -p ./ --noEmit --watch",
     "test": "node ./out/test/runTest.js"
   },
   "dependencies": {
@@ -107,7 +101,8 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "1.108.1",
+    "@types/vscode": "^1.111.0",
+    "esbuild": "^0.28.0",
     "typescript": "^5.3.0"
   }
 }

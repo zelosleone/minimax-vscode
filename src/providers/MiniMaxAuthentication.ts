@@ -19,9 +19,9 @@ export class MiniMaxAuthentication {
 
   async promptForApiKey(): Promise<string | undefined> {
     const input = await vscode.window.showInputBox({
-      prompt: "Enter your MiniMax API Key",
+      prompt: "MiniMax Token Plan API key (from platform.minimax.io)",
       password: true,
-      placeHolder: "minimax-...",
+      placeHolder: "Paste API key",
       ignoreFocusOut: true,
       validateInput: (value) => {
         if (!value || value.trim().length === 0) {

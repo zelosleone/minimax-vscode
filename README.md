@@ -1,74 +1,42 @@
-# MiniMax AI VSCode Extension
+# MiniMax (coding) for VS Code
 
-A VSCode extension that integrates MiniMax Coding Plan models as a language model provider using the VSCode Language Model Chat Provider API.
+Language model chat provider for GitHub Copilot in VS Code using MiniMax text models with a Token Plan API key.
 
 ## Features
 
-- **Coding Plan Models**: Uses MiniMax-M2.5, MiniMax-M2.1, or MiniMax-M2
-- **Global Endpoint**: Uses `https://api.minimax.io/v1`
-- **Interleaved tool reasoning** continuity with structured thinking blocks.
+- Token Plan API key from [platform.minimax.io](https://platform.minimax.io)
+- OpenAI-compatible chat to `https://api.minimax.io/v1`
+- Tool calling and reasoning/thinking streaming
 
 ## Requirements
 
-- VSCode 1.109.0 or later
-- MiniMax API key (get one at [MiniMax Dashboard](https://platform.minimax.io/user-center/payment/coding-plan))
+- VS Code 1.111.0+
+- MiniMax Token Plan subscription and API key
+- VS Code Insiders is required to render MiniMax thinking blocks via the proposed `languageModelThinkingPart` API
 
-### Thinking Blocks (Proposed API)
+## Setup
 
-When proposed API is enabled, structured thinking uses `LanguageModelThinkingPart`.
-Otherwise, the extension uses text-mode thinking blocks (`<think>...</think>`), while preserving full assistant responses for interleaved tool reasoning continuity.
+1. Get your Token Plan API key from [Account / Token Plan](https://platform.minimax.io/user-center/payment/token-plan)
+2. Use the API key navigation action in the model picker
+3. Choose a model in the Copilot model picker
 
-Optional (VS Code Insiders + proposed API):
+Keys are stored in VS Code Secret Storage.
 
-```bash
-code-insiders --enable-proposed-api denizhandaklr.minimax-vscode
-```
+## Configuration
 
+`minimax.visibleModels` (array of model IDs) controls which models appear in the picker.
 
-## Installation
+## Models
 
-1. Open VSCode
-2. Go to Extensions (Ctrl+Shift+X)
-3. Search for "MiniMax AI"
-4. Click Install
-
-### Setting Up Your API Key
-
-1. Get your API key from [MiniMax Dashboard](https://platform.minimax.io)
-2. Open Command Palette
-3. Run `MiniMax: Set API Key`
-4. Enter your API key when prompted
-
-### Model Visibility
-
-Set `minimax.visibleModels` in settings to control which MiniMax models appear in the model picker.
-
-## Supported Models
-
-| Model | Context Length |
-|-------|---------------|
-| MiniMax-M2.7 | 204.8K tokens |
-| MiniMax-M2.7-highspeed | 204.8K tokens |
-| MiniMax-M2.5 | 204.8K tokens |
-| MiniMax-M2.5-highspeed | 204.8K tokens |
-| MiniMax-M2.1 | 204.8K tokens |
-| MiniMax-M2 | 204.8K tokens |
-| MiniMax-M2-her | 204.8K tokens |
-
-## Usage
-
-Once configured, you can use MiniMax AI with VSCode's built-in chat features:
-
-1. Open the Chat view (Ctrl+Shift+Y)
-2. Select "MiniMax AI" as the provider
-3. Start chatting!
-
-
-## Security
-
-- API keys are stored securely using VSCode's SecretStorage
-- No sensitive data is logged
-- All API calls use HTTPS
+| Model | Context | Max output |
+|--------|---------|-----------|
+| MiniMax-M2.7 | 204,800 | 128,000 |
+| MiniMax-M2.7-highspeed | 204,800 | 128,000 |
+| MiniMax-M2.5 | 204,800 | 128,000 |
+| MiniMax-M2.5-highspeed | 204,800 | 128,000 |
+| MiniMax-M2.1 | 204,800 | 128,000 |
+| MiniMax-M2.1-highspeed | 204,800 | 128,000 |
+| MiniMax-M2 | 204,800 | 128,000 |
 
 ## License
 

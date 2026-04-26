@@ -2,7 +2,8 @@
 .vscode-test/**
 plans/**
 src/**
+node_modules/**
 tsconfig.json
+esbuild.mjs
 package-lock.json
 **/*.map
-**/*.ts

@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { MiniMaxClient, MiniMaxError } from "../api/MiniMaxClient";
+import { MiniMaxClient, MiniMaxError, type ChatOptions } from "../api/MiniMaxClient";
 import { MiniMaxAuthentication } from "./MiniMaxAuthentication";
 import { TokenCounter } from "../utils/TokenCounter";
 import {
@@ -10,12 +10,11 @@ import {
   MiniMaxToolMessage,
   MiniMaxToolCall,
   getModelById,
+  MiniMaxChatContent,
+  ModelInfo,
+  resolveModelIdForApi,
   SUPPORTED_MODELS,
 } from "../api/types";
-
-interface ModelWithApiKey extends vscode.LanguageModelChatInformation {
-  __minimaxApiKey?: string;
-}
 
 type PrepareOptionsWithConfiguration = vscode.PrepareLanguageModelChatModelOptions & {
   configuration?: Record<string, unknown>;
@@ -33,8 +32,7 @@ interface ReasoningUpdate {
 }
 
 type ThinkingPartCtor = new (
-  value: string | string[],
-  id?: string,
+  thinking: string,
   metadata?: Readonly<Record<string, unknown>>,
 ) => unknown;
 
@@ -49,6 +47,10 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   private readonly modelsChangedEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this.modelsChangedEmitter.event;
 
+  /** Model ID → API key, populated by provideLanguageModelChatInformation. */
+  private readonly modelApiKeys = new Map<string, string>();
+  private modelsRevision = 0;
+
   constructor(
     private readonly apiClient: MiniMaxClient,
     private readonly authManager: MiniMaxAuthentication,
@@ -56,6 +58,7 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   ) {}
 
   notifyModelsChanged(): void {
+    this.modelsRevision++;
     this.modelsChangedEmitter.fire();
   }
 
@@ -65,19 +68,23 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   ): Promise<vscode.LanguageModelChatInformation[]> {
     void token;
     const optionsWithConfig = options as PrepareOptionsWithConfiguration;
-    const supportsProviderConfiguration = Object.prototype.hasOwnProperty.call(
-      optionsWithConfig,
-      "configuration",
-    );
-    if (!supportsProviderConfiguration) {
+    const configuredApiKey = this.extractConfiguredApiKey(optionsWithConfig);
+    const models = this.modelsWithApiKey();
+
+    // Only expose models through configured provider groups.
+    // The base vendor scan (no configuration) must return [] so we don't
+    // duplicate entries when VS Code also resolves the configured group.
+    if (!configuredApiKey) {
+      this.modelApiKeys.clear();
       return [];
     }
 
-    const configuredApiKey = this.extractConfiguredApiKey(optionsWithConfig);
-    if (!configuredApiKey) {
-      return [];
+    this.modelApiKeys.clear();
+    for (const model of models) {
+      this.modelApiKeys.set(model.id, configuredApiKey);
     }
-    return this.modelsWithApiKey(configuredApiKey);
+
+    return models;
   }
 
   async provideLanguageModelChatResponse(
@@ -87,19 +94,30 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken,
   ): Promise<void> {
-    const modelApiKey = (model as ModelWithApiKey).__minimaxApiKey;
     const apiKey =
-      modelApiKey && modelApiKey.trim().length > 0
-        ? modelApiKey
-        : await this.authManager.getOrPromptApiKey();
+      this.modelApiKeys.get(model.id) ?? (await this.authManager.getOrPromptApiKey());
 
     if (!apiKey) {
-      throw new Error('API key not configured. Use "MiniMax: Set API Key" command.');
+      throw new Error('API key not configured. Use the API key navigation action in the MiniMax model picker.');
     }
 
     try {
       await this.streamResponse(this.apiClient, model, messages, options, progress, token, apiKey);
     } catch (error) {
+      if (error instanceof MiniMaxError && error.statusCode === 401) {
+        await this.authManager.deleteApiKey();
+        this.notifyModelsChanged();
+        const newKey = await this.authManager.promptForApiKey();
+        this.modelApiKeys.clear();
+        if (newKey) {
+          this.modelApiKeys.set(model.id, newKey);
+          this.notifyModelsChanged();
+          await this.streamResponse(this.apiClient, model, messages, options, progress, token, newKey);
+          return;
+        }
+        this.notifyModelsChanged();
+        throw new Error('Invalid API key. Please set a new one using the API key navigation action in the MiniMax model picker.');
+      }
       await this.throwMappedError(error);
     }
   }
@@ -115,7 +133,7 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   ): Promise<void> {
     const resolvedModel = getModelById(model.id);
     if (!resolvedModel) {
-      throw new Error(`Unsupported model "${model.id}" selected for MiniMax Coding Plan.`);
+      throw new Error(`Unsupported model "${model.id}" for MiniMax (coding / Token Plan).`);
     }
 
     let reasoningBuffer = "";
@@ -125,17 +143,23 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     let toolCallsEmitted = false;
     const tools = this.convertTools(options.tools);
 
+    const chatOptions: ChatOptions = {
+      maxTokens: this.resolveMaxTokens(options, resolvedModel),
+      temperature: this.resolveTemperature(options),
+      apiKey,
+      tools,
+      toolChoice: this.resolveToolChoice(options, tools),
+      reasoningSplit: useReasoningSplit,
+    };
+    const topP = this.resolveTopP(options);
+    if (topP !== undefined) {
+      chatOptions.topP = topP;
+    }
+
     const stream = client.streamChat(
-      resolvedModel.id,
+      resolveModelIdForApi(resolvedModel.id),
       this.convertMessages(messages),
-      {
-        maxTokens: this.resolveMaxTokens(options),
-        temperature: DEFAULT_TEMPERATURE,
-        apiKey,
-        tools,
-        toolChoice: this.resolveToolChoice(options, tools),
-        reasoningSplit: useReasoningSplit,
-      },
+      chatOptions,
       token,
     );
 
@@ -174,18 +198,22 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   }
 
   private async throwMappedError(error: unknown): Promise<never> {
-    if (!(error instanceof MiniMaxError)) {
+    if (error instanceof MiniMaxError) {
+      if (error.statusCode === 401) {
+        await this.authManager.deleteApiKey();
+        throw new Error('Invalid API key. Please set a new one using the API key navigation action in the MiniMax model picker.');
+      }
+      if (error.statusCode === 429) {
+        throw new Error("Rate limit exceeded. Please wait and try again.");
+      }
+      throw new Error(`MiniMax API error: ${error.message}`);
+    }
+
+    if (error instanceof Error) {
       throw error;
     }
 
-    if (error.statusCode === 401) {
-      await this.authManager.deleteApiKey();
-      throw new Error('Invalid API key. Please set a new one using "MiniMax: Set API Key".');
-    } else if (error.statusCode === 429) {
-      throw new Error("Rate limit exceeded. Please wait and try again.");
-    } else {
-      throw new Error(`MiniMax API error: ${error.message}`);
-    }
+    throw new Error(String(error));
   }
 
   provideTokenCount(
@@ -199,13 +227,15 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
       return Promise.resolve(this.tokenCounter.estimateTokens(text));
     }
 
-    let totalChars = 0;
+    let tokens = 0;
     for (const part of text.content) {
       if (part instanceof vscode.LanguageModelTextPart) {
-        totalChars += part.value.length;
+        tokens += this.tokenCounter.estimateTokens(part.value);
+      } else if (part instanceof vscode.LanguageModelDataPart) {
+        tokens += Math.ceil(part.data.length / 4); // imageInput is false; fallback
       }
     }
-    return Promise.resolve(this.tokenCounter.estimateTokens(String(totalChars)));
+    return Promise.resolve(tokens);
   }
 
   private convertMessages(
@@ -219,34 +249,24 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   }
 
   private toMiniMaxMessages(message: vscode.LanguageModelChatRequestMessage): MiniMaxMessage[] {
-    const role = this.convertRole(message.role);
     const parts = this.getMessageParts(message);
+    const name = this.readNonEmptyString(message.name);
 
-    if (role === "assistant") {
-      return [this.toMiniMaxAssistantMessage(parts)];
+    if (message.role === vscode.LanguageModelChatMessageRole.Assistant) {
+      return [this.toMiniMaxAssistantMessage(parts, name)];
     }
 
-    if (role === "user") {
-      return this.toMiniMaxUserAndToolMessages(parts);
+    if (message.role === vscode.LanguageModelChatMessageRole.User) {
+      return this.toMiniMaxUserAndToolMessages(parts, name);
     }
 
     return [
       {
         role: "system",
         content: this.concatTextParts(parts),
+        ...(name ? { name } : {}),
       },
     ];
-  }
-
-  private convertRole(role: vscode.LanguageModelChatMessageRole): "system" | "user" | "assistant" {
-    switch (role) {
-      case vscode.LanguageModelChatMessageRole.Assistant:
-        return "assistant";
-      case vscode.LanguageModelChatMessageRole.User:
-        return "user";
-      default:
-        return "system";
-    }
   }
 
   private getMessageParts(message: vscode.LanguageModelChatRequestMessage): readonly unknown[] {
@@ -261,7 +281,7 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     return [];
   }
 
-  private toMiniMaxAssistantMessage(parts: readonly unknown[]): MiniMaxAssistantMessage {
+  private toMiniMaxAssistantMessage(parts: readonly unknown[], name?: string): MiniMaxAssistantMessage {
     const content = this.concatTextParts(parts);
     const toolCalls: MiniMaxToolCall[] = [];
     const reasoningDetails: MiniMaxReasoningDetail[] = [];
@@ -288,13 +308,14 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     return {
       role: "assistant",
       content,
+      ...(name ? { name } : {}),
       ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       ...(reasoningDetails.length > 0 ? { reasoning_details: reasoningDetails } : {}),
     };
   }
 
-  private toMiniMaxUserAndToolMessages(parts: readonly unknown[]): MiniMaxMessage[] {
-    const textContent = this.concatTextParts(parts);
+  private toMiniMaxUserAndToolMessages(parts: readonly unknown[], name?: string): MiniMaxMessage[] {
+    const userContent = this.buildUserMessageContent(parts);
     const toolMessages: MiniMaxToolMessage[] = [];
 
     for (const part of parts) {
@@ -307,15 +328,24 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
       }
     }
 
+    const hasTextOrMedia =
+      typeof userContent === "string"
+        ? userContent.trim().length > 0
+        : userContent.length > 0;
     const messages: MiniMaxMessage[] = [];
-    if (textContent.trim().length > 0 || toolMessages.length === 0) {
+    if (hasTextOrMedia || toolMessages.length === 0) {
       messages.push({
         role: "user",
-        content: textContent,
+        content: userContent,
+        ...(name ? { name } : {}),
       });
     }
     messages.push(...toolMessages);
     return messages;
+  }
+
+  private buildUserMessageContent(parts: readonly unknown[]): MiniMaxChatContent {
+    return this.concatTextParts(parts);
   }
 
   private concatTextParts(parts: readonly unknown[]): string {
@@ -432,21 +462,24 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     return normalized.length > 0 ? normalized : undefined;
   }
 
-  private modelsWithApiKey(apiKey: string): vscode.LanguageModelChatInformation[] {
+  private modelsWithApiKey(): vscode.LanguageModelChatInformation[] {
     const visibleModels = this.getVisibleModels();
     return visibleModels.map(
       (model) =>
         ({
           id: model.id,
           name: model.name,
-          detail: "Coding Plan",
+          detail: "Token Plan",
+          tooltip: `${model.name} -- in ${model.maxInputTokens.toLocaleString()} / out ${model.maxOutputTokens.toLocaleString()} max tokens (context up to ${model.contextLength.toLocaleString()})`,
           family: model.id,
           version: "1.0",
-          maxInputTokens: model.contextLength,
-          maxOutputTokens: model.contextLength,
-          capabilities: { toolCalling: true },
-          __minimaxApiKey: apiKey,
-        }) as ModelWithApiKey,
+          maxInputTokens: model.maxInputTokens,
+          maxOutputTokens: model.maxOutputTokens,
+          capabilities: {
+            toolCalling: true,
+            imageInput: false, // OpenAI-compat endpoint doesn't accept image_url
+          },
+        }) satisfies vscode.LanguageModelChatInformation,
     );
   }
 
@@ -458,18 +491,48 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     }
 
     const configuredIds = new Set(
-      raw.filter((value): value is string => typeof value === "string"),
+      raw
+        .filter((value): value is string => typeof value === "string")
+        .filter((id) => getModelById(id) !== undefined),
     );
     const visibleModels = SUPPORTED_MODELS.filter((model) => configuredIds.has(model.id));
     return visibleModels.length > 0 ? visibleModels : SUPPORTED_MODELS;
   }
 
-  private resolveMaxTokens(options: vscode.ProvideLanguageModelChatResponseOptions): number {
+  private resolveMaxTokens(
+    options: vscode.ProvideLanguageModelChatResponseOptions,
+    model: ModelInfo,
+  ): number {
     const value = options.modelOptions?.maxTokens;
-    if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-      return DEFAULT_MAX_TOKENS;
+    const base =
+      typeof value === "number" && Number.isInteger(value) && value > 0
+        ? value
+        : DEFAULT_MAX_TOKENS;
+    return Math.min(base, model.maxOutputTokens);
+  }
+
+  private resolveTemperature(options: vscode.ProvideLanguageModelChatResponseOptions): number {
+    const value = options.modelOptions?.temperature;
+    if (typeof value === "number" && value > 0 && value <= 1) {
+      return value;
     }
-    return value;
+    return DEFAULT_TEMPERATURE;
+  }
+
+  private resolveTopP(
+    options: vscode.ProvideLanguageModelChatResponseOptions,
+  ): number | undefined {
+    const optionsRecord = options.modelOptions as
+      | { topP?: unknown; top_p?: unknown }
+      | undefined;
+    if (!optionsRecord) {
+      return undefined;
+    }
+    const raw = optionsRecord.topP ?? optionsRecord.top_p;
+    if (typeof raw === "number" && raw > 0 && raw <= 1) {
+      return raw;
+    }
+    return undefined;
   }
 
   private getLatestReasoningUpdate(choice: { delta?: unknown }): ReasoningUpdate | undefined {
@@ -522,7 +585,14 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
       return;
     }
 
-    const thinkingPart = new thinkingPartCtor(text, reasoning.id, reasoning.metadata);
+    const thinkingMetadata =
+      reasoning.id || reasoning.metadata
+        ? {
+            ...(reasoning.metadata ?? {}),
+            ...(reasoning.id ? { id: reasoning.id } : {}),
+          }
+        : undefined;
+    const thinkingPart = new thinkingPartCtor(text, thinkingMetadata);
     (progress as vscode.Progress<vscode.LanguageModelResponsePart | unknown>).report(
       thinkingPart as vscode.LanguageModelResponsePart,
     );
@@ -575,12 +645,12 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   private resolveToolChoice(
     options: vscode.ProvideLanguageModelChatResponseOptions,
     tools: readonly MiniMaxToolDefinition[] | undefined,
-  ): "auto" | "required" | undefined {
+  ): "auto" | undefined {
     if (!tools || tools.length === 0) {
       return undefined;
     }
 
-    return options.toolMode === vscode.LanguageModelChatToolMode.Required ? "required" : "auto";
+    return "auto"; // MiniMax only supports "auto", not "required".
   }
 
   private normalizeToolName(name: string | undefined): string | undefined {
