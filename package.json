@@ -2,7 +2,7 @@
   "name": "minimax-vscode",
   "displayName": "MiniMax (coding)",
   "description": "Language model provider for GitHub Copilot in VS Code: use MiniMax text models for programming with a Token Plan API key. Does not add speech, video, or image generation APIs.",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "publisher": "denizhandaklr",
   "license": "MIT",
   "icon": "icon/icon.png",
@@ -14,6 +14,9 @@
   "engines": {
     "vscode": "^1.111.0"
   },
+  "extensionKind": [
+    "ui"
+  ],
   "categories": [
     "AI",
     "Chat"
