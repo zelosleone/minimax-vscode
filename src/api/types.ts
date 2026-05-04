@@ -100,7 +100,6 @@ export const SUPPORTED_MODELS: readonly ModelInfo[] = [
   { id: "MiniMax-M2", name: "MiniMax M2", contextLength: CTX_204K, maxInputTokens: 200_000, maxOutputTokens: OUT_128K },
 ];
 
-// fromEntries yields Partial; every entry in SUPPORTED_MODELS has a key.
 const MODEL_BY_ID: Readonly<Record<ModelId, ModelInfo>> = Object.fromEntries(
   SUPPORTED_MODELS.map((model) => [model.id, model]),
 ) as Record<ModelId, ModelInfo>;
@@ -117,7 +116,7 @@ export function getModelById(id: ModelId): ModelInfo;
 export function getModelById(id: string): ModelInfo | undefined;
 export function getModelById(id: string): ModelInfo | undefined {
   if (Object.prototype.hasOwnProperty.call(MODEL_BY_ID, id)) {
-    return MODEL_BY_ID[id as ModelId]; // guarded by hasOwnProperty
+    return MODEL_BY_ID[id as ModelId]; 
   }
   return undefined;
 }
