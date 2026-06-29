@@ -6,3 +6,4 @@ out/
 Thumbs.db
 .vscode/
 .idea/
+scripts/__fake_vscode__.js
