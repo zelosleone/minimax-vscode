@@ -117,9 +117,38 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     for (const part of text.content) {
       if (part instanceof vscode.LanguageModelTextPart) {
         tokens += this.tokenCounter.estimateTokens(part.value);
+      } else if (part instanceof vscode.LanguageModelToolCallPart) {
+        // Tool calls are serialized as part of the assistant message.
+        // Without this, the bar under-reports any turn that included a tool call.
+        const serialized = JSON.stringify({
+          id: part.callId,
+          name: part.name,
+          arguments: part.input ?? {},
+        });
+        tokens += this.tokenCounter.estimateTokens(serialized);
+      } else if (part instanceof vscode.LanguageModelToolResultPart) {
+        // Tool results ship as part of the user message and can be large
+        // (file contents, command output, etc.). JSON-stringify the
+        // content array so nested parts (text, data, etc.) are counted.
+        try {
+          const serialized = JSON.stringify(part.content);
+          tokens += this.tokenCounter.estimateTokens(serialized);
+        } catch {
+          // Fall back to a rough size estimate if the content isn't JSON-safe.
+          tokens += Math.ceil(String(part.content).length / 4);
+        }
       } else if (part instanceof vscode.LanguageModelDataPart) {
-        tokens += Math.ceil(part.data.length / 4);
+        if (part.mimeType.startsWith("image/")) {
+          // Treat any image as ~1500 tokens. This is a coarse but far more
+          // accurate estimate than data.length / 4 (which over-counts by
+          // ~100x for base64-encoded image bytes).
+          tokens += 1500;
+        } else {
+          tokens += Math.ceil(part.data.length / 4);
+        }
       }
+      // LanguageModelThinkingPart (proposed API) is not present here; it is
+      // emitted on the response side, not in the request message content.
     }
     return Promise.resolve(tokens);
   }
