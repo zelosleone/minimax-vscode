@@ -3,6 +3,7 @@ import { MiniMaxProvider } from "./providers/MiniMaxProvider";
 import { MiniMaxAuthentication } from "./providers/MiniMaxAuthentication";
 import { MiniMaxClient } from "./api/MiniMaxClient";
 import { TokenCounter } from "./utils/TokenCounter";
+import { registerGenerateCommitMessageCommand } from "./commands/generateCommitMessage";
 import {
   CONFIG_SECTION,
   VISIBLE_MODELS_KEY,
@@ -43,6 +44,7 @@ export function activate(context: vscode.ExtensionContext): void {
           vscode.window.showInformationMessage("MiniMax: Switched to Chinese API (api.minimaxi.com)");
         });
     }),
+    registerGenerateCommitMessageCommand(),
   );
 }
 

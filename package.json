@@ -48,8 +48,23 @@
       {
         "command": "minimax.switchToChina",
         "title": "MiniMax: Switch to Chinese API (minimaxi.com)"
+      },
+      {
+        "command": "minimax.generateCommitMessage",
+        "title": "MiniMax: Generate Commit Message",
+        "icon": "$(sparkle)",
+        "category": "MiniMax"
       }
     ],
+    "menus": {
+      "scm/input": [
+        {
+          "command": "minimax.generateCommitMessage",
+          "group": "inline",
+          "when": "scmProvider == git && config.minimax.commitMessageGeneration.enabled"
+        }
+      ]
+    },
     "configuration": {
       "title": "MiniMax",
       "properties": {
@@ -58,6 +73,12 @@
           "default": "https://api.minimax.io/v1",
           "scope": "application",
           "markdownDescription": "MiniMax API base URL. Use `https://api.minimax.io/v1` for international users or `https://api.minimaxi.com/v1` for users in China. Must end with `/v1`."
+        },
+        "minimax.commitMessageGeneration.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "markdownDescription": "Show the MiniMax sparkle on the SCM commit-message input. Disable to remove the inline button without uninstalling the extension."
         },
         "minimax.visibleModels": {
           "type": "array",
