@@ -129,6 +129,16 @@ export class InlineThinkingParser {
         return { cleaned, thinking };
       }
 
+      // Strip stray closing tag: when reasoning_split=true the API is supposed to keep
+      // <think>/</think> out of content, but the model often leaves a trailing </think>
+      // (and occasionally a lone <think>) in the final content stream. Drop it silently.
+      const strayClose = remaining.indexOf(CLOSE_TAG);
+      if (strayClose !== -1) {
+        cleaned += remaining.slice(0, strayClose);
+        remaining = remaining.slice(strayClose + CLOSE_LEN);
+        continue;
+      }
+
       const oi = remaining.indexOf(OPEN_TAG);
       if (oi !== -1) {
         cleaned += remaining.slice(0, oi);

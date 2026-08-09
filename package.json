@@ -2,7 +2,7 @@
   "name": "minimax-vscode",
   "displayName": "MiniMax (coding)",
   "description": "Language model provider for GitHub Copilot in VS Code: use MiniMax text models for programming with a Token Plan API key. Does not add speech, video, or image generation APIs.",
-  "version": "1.4.4",
+  "version": "1.5.5",
   "publisher": "denizhandaklr",
   "license": "MIT",
   "icon": "icon/icon.png",
@@ -25,7 +25,11 @@
   "keywords": [
     "ai",
     "minimax",
+    "minimax m3",
     "minimax m2.7",
+    "minimax m2.5",
+    "minimax m2.1",
+    "minimax m2",
     "token plan",
     "language model",
     "github copilot",
@@ -48,8 +52,35 @@
       {
         "command": "minimax.switchToChina",
         "title": "MiniMax: Switch to Chinese API (minimaxi.com)"
+      },
+      {
+        "command": "minimax.clearApiKey",
+        "title": "MiniMax: Clear Stored API Key"
+      },
+      {
+        "command": "minimax.selectApiFormat",
+        "title": "MiniMax: Select API Endpoint (OpenAI / Anthropic SDK)"
+      },
+      {
+        "command": "minimax.toggleThinking",
+        "title": "MiniMax: Toggle Thinking (M3)"
+      },
+      {
+        "command": "minimax.generateCommitMessage",
+        "title": "MiniMax: Generate Commit Message",
+        "icon": "$(sparkle)",
+        "category": "MiniMax"
       }
     ],
+    "menus": {
+      "scm/title": [
+        {
+          "command": "minimax.generateCommitMessage",
+          "group": "navigation",
+          "when": "scmProvider == git && config.minimax.commitMessageGeneration.enabled"
+        }
+      ]
+    },
     "configuration": {
       "title": "MiniMax",
       "properties": {
@@ -57,7 +88,33 @@
           "type": "string",
           "default": "https://api.minimax.io/v1",
           "scope": "application",
-          "markdownDescription": "MiniMax API base URL. Use `https://api.minimax.io/v1` for international users or `https://api.minimaxi.com/v1` for users in China. Must end with `/v1`."
+          "markdownDescription": "OpenAI-compatible API base URL. Use `https://api.minimax.io/v1` for international users or `https://api.minimaxi.com/v1` for users in China. Must end with `/v1`. Ignored when `minimax.apiFormat` is set to `anthropic-compat`."
+        },
+        "minimax.apiFormat": {
+          "type": "string",
+          "enum": [
+            "openai-compat",
+            "anthropic-compat"
+          ],
+          "enumDescriptions": [
+            "OpenAI-compatible Chat Completions API at `https://api.minimax.io/v1` (default).",
+            "Anthropic-compatible Messages API at `https://api.minimax.io/anthropic` (recommended by MiniMax docs)."
+          ],
+          "default": "openai-compat",
+          "scope": "application",
+          "markdownDescription": "API protocol to use. `anthropic-compat` is the recommended path per MiniMax docs and enables the `count_tokens` endpoint and native thinking blocks. `openai-compat` is the legacy default."
+        },
+        "minimax.anthropicBaseUrl": {
+          "type": "string",
+          "default": "https://api.minimax.io/anthropic",
+          "scope": "application",
+          "markdownDescription": "Anthropic-compatible API base URL. Use `https://api.minimax.io/anthropic` for international users or `https://api.minimaxi.com/anthropic` for users in China. Ignored when `minimax.apiFormat` is `openai-compat`."
+        },
+        "minimax.commitMessageGeneration.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "markdownDescription": "Show the MiniMax sparkle in the Source Control view's title toolbar. Disable to remove the button without uninstalling the extension."
         },
         "minimax.visibleModels": {
           "type": "array",
@@ -87,6 +144,12 @@
           "uniqueItems": true,
           "scope": "application",
           "markdownDescription": "Programming text models (M2 / M2.1 / M2.5 / M2.7) for Token Plan. Order matches [MiniMax M2.7 for AI coding](https://platform.minimax.io/docs/guides/text-ai-coding-tools). Role-play (M2-her) is not included."
+        },
+        "minimax.thinkingEnabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "markdownDescription": "Enable thinking/reasoning output. Setting this to `false` sends `thinking: {\"type\": \"disabled\"}` for M3 (faster, no reasoning tokens). M2.x models always emit thinking regardless of this setting."
         }
       }
     },
@@ -102,6 +165,26 @@
               "secret": true,
               "title": "API key",
               "description": "MiniMax Token Plan API key from platform.minimax.io (Account / Token Plan)."
+            },
+            "apiFormat": {
+              "type": "string",
+              "title": "API endpoint (SDK)",
+              "enum": [
+                "openai-compat",
+                "anthropic-compat"
+              ],
+              "enumDescriptions": [
+                "OpenAI SDK — Chat Completions API at api.minimax.io/v1 (legacy default)",
+                "Anthropic SDK — Messages API at api.minimax.io/anthropic (recommended by MiniMax)"
+              ],
+              "default": "openai-compat",
+              "description": "Which protocol/SDK to use for requests. Anthropic is the path recommended by MiniMax docs (native thinking blocks, count_tokens)."
+            },
+            "thinkingEnabled": {
+              "type": "boolean",
+              "title": "Thinking (M3)",
+              "default": true,
+              "description": "Enable thinking/reasoning output for MiniMax-M3. M2.x models always emit thinking."
             }
           },
           "required": [
@@ -112,19 +195,24 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run build",
+    "vscode:prepublish": "npm run bundle",
     "compile": "tsc -p ./ --noEmit",
-    "build": "node esbuild.mjs --production",
+    "build": "npm run bundle && npm run package",
+    "bundle": "node esbuild.mjs --production",
+    "package": "vsce package --no-dependencies",
+    "package:allow-missing-repository": "vsce package --no-dependencies --allow-missing-repository",
     "watch:esbuild": "node esbuild.mjs --watch",
     "watch:tsc": "tsc -p ./ --noEmit --watch",
     "test": "node ./out/test/runTest.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
     "openai": "^6.5.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.111.0",
+    "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.28.1",
     "typescript": "^5.3.0"
   }

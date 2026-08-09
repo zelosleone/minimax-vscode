@@ -1,27 +1,33 @@
 ﻿import * as vscode from "vscode";
-import { MiniMaxClient, type ChatOptions } from "../api/MiniMaxClient";
 import { MiniMaxError } from "../api/MiniMaxError";
 import { getModelById, resolveModelIdForApi } from "../api/types";
+import type { MinimaxStreamClient } from "../api/MinimaxStreamClient";
+import { MiniMaxOpenAIClient } from "../api/MiniMaxOpenAIClient";
+import { MiniMaxAnthropicClient } from "../api/MiniMaxAnthropicClient";
 import { convertMessages } from "../utils/MessageConverter";
 import {
   getApiBaseUrl,
+  getAnthropicBaseUrl,
+  getApiFormat,
+  getThinkingMode,
+  isThinkingMode,
   modelsWithApiKey,
   resolveMaxTokens,
   resolveTemperature,
+  resolveThinkingControl,
   resolveTopP,
+  setApiFormat,
+  setThinkingMode,
+  type ApiFormat,
+  type ThinkingMode,
 } from "../utils/ModelConfig";
 import {
-  getLatestReasoningUpdate,
   getThinkingPartCtor,
   InlineThinkingParser,
-  reportReasoning,
 } from "../utils/ThinkingHelper";
 import { TokenCounter } from "../utils/TokenCounter";
 import {
-  accumulateToolCalls,
   convertTools,
-  isToolCallFinish,
-  reportToolCalls,
   resolveToolChoice,
   type AccumulatedToolCall,
 } from "../utils/ToolConverter";
@@ -37,16 +43,26 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   readonly onDidChangeLanguageModelChatInformation = this.modelsChangedEmitter.event;
 
   private readonly modelApiKeys = new Map<string, string>();
-  private lastPromptTokens = 0;
 
   constructor(
-    private readonly apiClient: MiniMaxClient,
     private readonly authManager: MiniMaxAuthentication,
     private readonly tokenCounter: TokenCounter,
   ) { }
 
+  private createClient(): MinimaxStreamClient {
+    const format = getApiFormat();
+    if (format === "anthropic-compat") {
+      return new MiniMaxAnthropicClient(getAnthropicBaseUrl());
+    }
+    return new MiniMaxOpenAIClient(getApiBaseUrl());
+  }
+
   notifyModelsChanged(): void {
     this.modelsChangedEmitter.fire();
+  }
+
+  clearApiKeyCache(): void {
+    this.modelApiKeys.clear();
   }
 
   async provideLanguageModelChatInformation(
@@ -55,6 +71,7 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   ): Promise<vscode.LanguageModelChatInformation[]> {
     const optionsWithConfig = options as PrepareOptionsWithConfiguration;
     const configuredApiKey = this.extractConfiguredApiKey(optionsWithConfig);
+    await this.applyConfiguredPreferences(optionsWithConfig);
     const models = modelsWithApiKey();
 
     if (!configuredApiKey) {
@@ -138,85 +155,214 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
       throw new Error(`Unsupported model "${model.id}" for MiniMax (coding / Token Plan).`);
     }
 
-    let reasoningBuffer = "";
     const thinkingPartCtor = getThinkingPartCtor();
     const inlineParser = new InlineThinkingParser();
     const pendingToolCalls = new Map<number, AccumulatedToolCall>();
-    let toolCallsEmitted = false;
+    const emittedToolCallIndices = new Set<number>();
+    let pendingTrailingContent = "";
     const tools = convertTools(options.tools);
 
-    const chatOptions: ChatOptions = {
-      maxTokens: resolveMaxTokens(options, resolvedModel),
-      temperature: resolveTemperature(options),
-      apiKey,
-      baseUrl: getApiBaseUrl(),
-      tools,
-      toolChoice: resolveToolChoice(options, tools),
-      reasoningSplit: true,
-    };
-    const topP = resolveTopP(options);
-    if (topP !== undefined) {
-      chatOptions.topP = topP;
+    // Split system message out so the Anthropic adapter can put it in the
+    // `system` field, while the OpenAI adapter keeps it in the messages array.
+    const converted = convertMessages(messages);
+    const systemParts: string[] = [];
+    const nonSystemMessages: typeof converted = [];
+    for (const m of converted) {
+      if (m.role === "system") {
+        systemParts.push(typeof m.content === "string" ? m.content : "");
+      } else {
+        nonSystemMessages.push(m);
+      }
     }
 
-    const stream = this.apiClient.streamChat(
-      resolveModelIdForApi(resolvedModel.id),
-      convertMessages(messages),
-      chatOptions,
-      token,
-    );
+    const toolChoice = resolveToolChoice(options, tools);
+    const topP = resolveTopP(options);
 
-    for await (const chunk of stream) {
+    const client = this.createClient();
+    const thinkingMode = getThinkingMode();
+    const thinkingControl = resolveThinkingControl(thinkingMode, resolvedModel, getApiFormat());
+    const stream = client.streamChat({
+      apiKey,
+      model: resolveModelIdForApi(resolvedModel.id),
+      maxTokens: resolveMaxTokens(options, resolvedModel),
+      temperature: resolveTemperature(options),
+      topP,
+      tools,
+      toolChoice: toolChoice ?? "auto",
+      reasoningSplit: true,
+      ...(thinkingControl ? { thinking: thinkingControl } : {}),
+      cancellationToken: token,
+      messages: nonSystemMessages,
+      systemPrompt: systemParts.join("\n\n") || undefined,
+    });
+
+    for await (const event of stream) {
       if (token.isCancellationRequested) {
         return;
       }
-
-      for (const choice of chunk.choices) {
-        const latestReasoning = getLatestReasoningUpdate(choice);
-        const reasoningContent = (choice.delta as { reasoning_content?: string } | undefined)
-          ?.reasoning_content;
-
-        if (latestReasoning) {
-          const newReasoning = latestReasoning.text.startsWith(reasoningBuffer)
-            ? latestReasoning.text.slice(reasoningBuffer.length)
-            : latestReasoning.text;
-
-          if (newReasoning) {
-            reportReasoning(progress, thinkingPartCtor, newReasoning, latestReasoning);
-            reasoningBuffer = latestReasoning.text;
+      switch (event.kind) {
+        case "thinking": {
+          if (event.text && thinkingPartCtor) {
+            progress.report(
+              new thinkingPartCtor(event.text) as vscode.LanguageModelResponsePart,
+            );
+          } else if (event.text) {
+            progress.report(
+              new vscode.LanguageModelTextPart(`[thinking]${event.text}[/thinking]`),
+            );
           }
-        } else if (reasoningContent) {
-          if (thinkingPartCtor) {
-            progress.report(new thinkingPartCtor(reasoningContent) as vscode.LanguageModelResponsePart);
-          } else {
-            progress.report(new vscode.LanguageModelTextPart(`[thinking]${reasoningContent}[/thinking]`));
-          }
+          break;
         }
-
-        const rawContent = choice.delta?.content;
-        if (rawContent) {
-          const { cleaned, thinking: inlineThinking } = inlineParser.feed(rawContent);
-          if (inlineThinking) {
-            if (thinkingPartCtor) {
-              progress.report(new thinkingPartCtor(inlineThinking) as vscode.LanguageModelResponsePart);
-            } else {
-              progress.report(new vscode.LanguageModelTextPart(`[thinking]${inlineThinking}[/thinking]`));
-            }
+        case "text": {
+          const { cleaned, thinking: inlineThinking } = inlineParser.feed(event.text);
+          if (inlineThinking && thinkingPartCtor) {
+            progress.report(
+              new thinkingPartCtor(inlineThinking) as vscode.LanguageModelResponsePart,
+            );
+          } else if (inlineThinking) {
+            progress.report(
+              new vscode.LanguageModelTextPart(`[thinking]${inlineThinking}[/thinking]`),
+            );
           }
           if (cleaned) {
-            progress.report(new vscode.LanguageModelTextPart(cleaned));
+            // Buffer trailing content so a stray </think> arriving in a later event
+            // can be paired and discarded before the user sees it.
+            const combined = pendingTrailingContent + cleaned;
+            const strayClose = combined.indexOf("</think>");
+            if (strayClose !== -1) {
+              const safe = combined.slice(0, strayClose);
+              if (safe) {
+                progress.report(new vscode.LanguageModelTextPart(safe));
+              }
+              pendingTrailingContent = "";
+            } else {
+              pendingTrailingContent = combined;
+            }
           }
+          break;
         }
-
-        accumulateToolCalls(choice, pendingToolCalls);
-        if (!toolCallsEmitted && isToolCallFinish(choice)) {
-          reportToolCalls(progress, pendingToolCalls);
-          toolCallsEmitted = true;
+        case "tool_use_start": {
+          const current: AccumulatedToolCall =
+            pendingToolCalls.get(event.index) ?? {
+              index: event.index,
+              arguments: "",
+            };
+          current.id = event.id;
+          current.name = event.name;
+          pendingToolCalls.set(event.index, current);
+          break;
+        }
+        case "tool_use_delta": {
+          const current: AccumulatedToolCall =
+            pendingToolCalls.get(event.index) ?? {
+              index: event.index,
+              arguments: "",
+            };
+          current.arguments += event.partialJson;
+          pendingToolCalls.set(event.index, current);
+          break;
+        }
+        case "tool_use_stop": {
+          const call = pendingToolCalls.get(event.index);
+          if (call) {
+            this.emitToolCall(progress, call, emittedToolCallIndices);
+          }
+          break;
+        }
+        case "content_block_start":
+        case "usage":
+          // Informational only on these paths; nothing to do in the provider loop.
+          break;
+        case "finish": {
+          this.emitToolCalls(progress, pendingToolCalls, emittedToolCallIndices);
+          break;
+        }
+        default: {
+          // Exhaustiveness check.
+          const _exhaustive: never = event;
+          void _exhaustive;
         }
       }
-      
-      if (chunk.usage?.prompt_tokens) {
-        this.lastPromptTokens = chunk.usage.prompt_tokens;
+    }
+
+    // Flush any content buffered while waiting for a possible stray </think>.
+    if (pendingTrailingContent) {
+      progress.report(new vscode.LanguageModelTextPart(pendingTrailingContent));
+      pendingTrailingContent = "";
+    }
+  }
+
+  private emitToolCalls(
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    pendingToolCalls: Map<number, AccumulatedToolCall>,
+    emittedIndices: Set<number>,
+  ): void {
+    const ordered = [...pendingToolCalls.values()].sort((a, b) => a.index - b.index);
+    for (const call of ordered) {
+      this.emitToolCall(progress, call, emittedIndices);
+    }
+  }
+
+  private emitToolCall(
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    call: AccumulatedToolCall,
+    emittedIndices: Set<number>,
+  ): void {
+    if (!call.id || !call.name || emittedIndices.has(call.index)) {
+      return;
+    }
+    emittedIndices.add(call.index);
+    let parsed: unknown = {};
+    try {
+      parsed = JSON.parse(call.arguments);
+    } catch {
+      parsed = {};
+    }
+    progress.report(
+      new vscode.LanguageModelToolCallPart(call.id, call.name, parsed as object),
+    );
+  }
+
+  /**
+   * The chat UI's "Manage Language Models" flow passes the values entered for
+   * the `languageModelChatProviders` configuration schema (apiFormat,
+   * thinkingMode) alongside the API key. Persist them to user settings so
+   * the rest of the extension picks them up.
+   *
+   * `thinkingMode` is the new tri-state dropdown exposed next to the model
+   * picker; we still accept the legacy `thinkingEnabled` boolean for users
+   * who migrated from the previous settings-only UI.
+   */
+  private async applyConfiguredPreferences(
+    options: PrepareOptionsWithConfiguration,
+  ): Promise<void> {
+    const config = options.configuration;
+    if (!config || typeof config !== "object") {
+      return;
+    }
+
+    const format = config.apiFormat;
+    if (
+      (format === "openai-compat" || format === "anthropic-compat") &&
+      format !== getApiFormat()
+    ) {
+      await setApiFormat(format as ApiFormat);
+    }
+
+    const mode = config.thinkingMode;
+    if (isThinkingMode(mode) && mode !== getThinkingMode()) {
+      await setThinkingMode(mode);
+      return;
+    }
+    // Legacy boolean: only apply if the new tri-state key wasn't set in this
+    // same picker dialog (otherwise we'd clobber an explicit dropdown choice).
+    if (config.thinkingMode === undefined) {
+      const legacy = config.thinkingEnabled;
+      if (typeof legacy === "boolean") {
+        const mapped: ThinkingMode = legacy ? "adaptive" : "off";
+        if (mapped !== getThinkingMode()) {
+          await setThinkingMode(mapped);
+        }
       }
     }
   }

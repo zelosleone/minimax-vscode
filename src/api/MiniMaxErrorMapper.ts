@@ -1,11 +1,12 @@
 ﻿import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import { MiniMaxError } from "./MiniMaxError";
 
 const ERROR_MESSAGES: Record<string, string> = {
   "1000": "Unknown error. Please try again later.",
   "1001": "Request timed out. Please try again.",
   "1002": "Rate limit exceeded. Please wait a moment and try again.",
-  "1004": "Invalid API key or unauthorized request.",
+  "1004": "Not authorized. Please check your API key and make sure it is correct and active.",
   "1008": "Insufficient balance. Please check your MiniMax Token Plan.",
   "1024": "Internal server error. Please try again later.",
   "1026": "Input flagged by content safety system. Please adjust your prompt.",
@@ -14,7 +15,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   "1039": "Token limit exceeded. Please reduce the message length and try again.",
   "1041": "Connection limit reached. Please wait and try again.",
   "1042": "Input contains excessive invisible characters. Please clean up your input.",
-  "2049": "Invalid API key. Please check your key and try again.",
+  "2049": "Invalid API key. Please check your key and make sure it is correct and active.",
+  "2056": "Usage limit exceeded. Please wait for the resource release in the next 5-hour window.",
 };
 
 export function toMiniMaxError(error: unknown): MiniMaxError {
@@ -22,7 +24,7 @@ export function toMiniMaxError(error: unknown): MiniMaxError {
     return error;
   }
 
-  if (error instanceof OpenAI.APIError) {
+  if (error instanceof OpenAI.APIError || error instanceof Anthropic.APIError) {
     const statusCode = error.status ?? 0;
     const minimaxCode = extractCode(error);
     const message = getMessageForCode(minimaxCode, statusCode, error.message);
@@ -30,8 +32,11 @@ export function toMiniMaxError(error: unknown): MiniMaxError {
     return new MiniMaxError(message, code, statusCode);
   }
 
-  if (error instanceof Error && error.name === "AbortError") {
-    return new MiniMaxError("Request timeout", "TIMEOUT");
+  if (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.name === "APIUserAbortError")
+  ) {
+    return new MiniMaxError("Request aborted", "TIMEOUT");
   }
 
   if (error instanceof Error) {
