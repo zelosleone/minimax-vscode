@@ -59,6 +59,8 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
 
   private availableModels: readonly ModelInfo[];
   private devCache: ModelsDevCache | undefined;
+  /** The key VS Code hands us (Manage Models); requests use it, so refreshes do too. */
+  private refreshKey: string | undefined;
   private readonly refreshTimer: ReturnType<typeof setInterval>;
 
   constructor(
@@ -85,9 +87,9 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
    * first and models.dev second, persist, and fire onDidChange only when the
    * served list actually changed. */
   async refreshModels(): Promise<void> {
-    let apiKey: string | undefined;
+    let apiKey = this.refreshKey;
     try {
-      apiKey = await this.authManager.getApiKey();
+      apiKey ??= await this.authManager.getApiKey();
     } catch {
       return;
     }
@@ -164,19 +166,32 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     this.modelsChangedEmitter.fire();
   }
 
+  /** Refresh with the key in use; with no catalog yet (first run), wait so the picker is not empty. */
+  private async syncCatalog(apiKey: string): Promise<void> {
+    if (apiKey === this.refreshKey && this.availableModels.length > 0) {
+      return;
+    }
+    this.refreshKey = apiKey;
+    const refresh = this.refreshModels();
+    if (this.availableModels.length === 0) {
+      await refresh;
+    }
+  }
+
   async provideLanguageModelChatInformation(
     options: vscode.PrepareLanguageModelChatModelOptions,
     _token: vscode.CancellationToken,
   ): Promise<vscode.LanguageModelChatInformation[]> {
     const optionsWithConfig = options as PrepareOptionsWithConfiguration;
     const configuredApiKey = this.extractConfiguredApiKey(optionsWithConfig);
-    const models = modelsWithApiKey(this.availableModels);
 
     if (!configuredApiKey) {
       this.modelApiKeys.clear();
       return [];
     }
 
+    await this.syncCatalog(configuredApiKey);
+    const models = modelsWithApiKey(this.availableModels);
     this.modelApiKeys.clear();
     for (const model of models) {
       this.modelApiKeys.set(model.id, configuredApiKey);

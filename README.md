@@ -1,45 +1,22 @@
 # MiniMax (coding) for VS Code
 
-Language model chat provider for GitHub Copilot in VS Code using MiniMax text models with a Token Plan API key.
+Use MiniMax text models from your Token Plan in GitHub Copilot Chat. Speech, video and image generation are not included.
 
-## Features
+1. Get a Token Plan API key from [platform.minimax.io](https://platform.minimax.io/user-center/payment/token-plan).
+2. In the Copilot Chat model picker, open **Manage Models**, pick **MiniMax** and paste the key.
+3. Pick a MiniMax model and set its reasoning effort right in the picker.
 
-- Token Plan API key from [platform.minimax.io](https://platform.minimax.io)
-- OpenAI-compatible chat to `https://api.minimax.io/v1`
-- Tool calling and reasoning/thinking streaming
-- M3 model supports image input (multimodal)
+The model list comes live from the MiniMax API, and context windows, image support and effort levels come from [models.dev](https://models.dev), so new models show up without an update. Copilot's context window indicator works as usual.
 
-## Requirements
+Reasoning Effort is live per model: Auto, Off and On, or Auto plus levels from Low to Max where the model supports them. Auto sends nothing and lets MiniMax decide. Thinking blocks need VS Code Insiders (proposed API).
 
-- VS Code 1.111.0+
-- MiniMax Token Plan subscription and API key
-- VS Code Insiders is required to render MiniMax thinking blocks via the proposed `languageModelThinkingPart` API
+## Settings and commands
 
-## Setup
+| | |
+|---|---|
+| `minimax.apiBaseUrl` | `https://api.minimax.io/v1` by default; use `https://api.minimaxi.com/v1` in China. Must end with `/v1`. |
+| `minimax.visibleModels` | Model ids to show. Empty (the default) shows every live model. |
+| **MiniMax: Switch to Global API (minimax.io)** | Use the international endpoint |
+| **MiniMax: Switch to Chinese API (minimaxi.com)** | Use the China endpoint |
 
-1. Get your Token Plan API key from [Account / Token Plan](https://platform.minimax.io/user-center/payment/token-plan)
-2. Use the API key navigation action in the model picker
-3. Choose a model in the Copilot model picker
-
-Keys are stored in VS Code Secret Storage.
-
-## Configuration
-
-`minimax.visibleModels` (array of model IDs) controls which models appear in the picker.
-
-## Models
-
-| Model | Context | Max input | Max output |
-|--------|---------|-----------|-----------|
-| MiniMax-M3 | 1,000,000 | 1,000,000 | 131,072 |
-| MiniMax-M2.7 | 204,800 | 200,000 | 131,072 |
-| MiniMax-M2.7-highspeed | 204,800 | 200,000 | 131,072 |
-| MiniMax-M2.5 | 204,800 | 196,000 | 128,000 |
-| MiniMax-M2.5-highspeed | 204,800 | 196,000 | 128,000 |
-| MiniMax-M2.1 | 204,800 | 196,000 | 128,000 |
-| MiniMax-M2.1-highspeed | 204,800 | 196,000 | 128,000 |
-| MiniMax-M2 | 204,800 | 192,000 | 128,000 |
-
-## License
-
-MIT
+Requires VS Code 1.111+. MIT license.
