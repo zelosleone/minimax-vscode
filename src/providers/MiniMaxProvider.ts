@@ -1,7 +1,15 @@
 ﻿import * as vscode from "vscode";
 import { MiniMaxClient, type ChatOptions } from "../api/MiniMaxClient";
 import { MiniMaxError } from "../api/MiniMaxError";
-import { getModelById, resolveModelIdForApi } from "../api/types";
+import {
+  DEFAULT_API_BASE_URL,
+  SUPPORTED_MODELS,
+  fetchLiveModelCatalog,
+  getModelById,
+  mergeModelCatalog,
+  resolveModelIdForApi,
+  type ModelInfo,
+} from "../api/types";
 import { convertMessages } from "../utils/MessageConverter";
 import {
   getApiBaseUrl,
@@ -32,18 +40,68 @@ type PrepareOptionsWithConfiguration = vscode.PrepareLanguageModelChatModelOptio
   configuration?: Record<string, unknown>;
 };
 
-export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
+export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode.Disposable {
   private readonly modelsChangedEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this.modelsChangedEmitter.event;
 
   private readonly modelApiKeys = new Map<string, string>();
   private lastPromptTokens = 0;
 
+  private availableModels: readonly ModelInfo[];
+  private readonly refreshTimer: ReturnType<typeof setInterval>;
+
   constructor(
     private readonly apiClient: MiniMaxClient,
     private readonly authManager: MiniMaxAuthentication,
     private readonly tokenCounter: TokenCounter,
-  ) { }
+    private readonly context: vscode.ExtensionContext,
+  ) {
+    this.availableModels = readCachedCatalog(context.globalState);
+    void this.refreshModels();
+    this.refreshTimer = setInterval(() => {
+      void this.refreshModels();
+    }, 30 * 60 * 1000);
+  }
+
+  dispose(): void {
+    clearInterval(this.refreshTimer);
+    this.modelsChangedEmitter.dispose();
+  }
+
+  /** Re-fetch GET {baseUrl}/models, merge with the known table, persist the
+   * catalog, and fire onDidChange only when the id list actually changed. */
+  async refreshModels(): Promise<void> {
+    let apiKey: string | undefined;
+    try {
+      apiKey = await this.authManager.getApiKey();
+    } catch {
+      return;
+    }
+    if (!apiKey || apiKey.trim().length === 0) {
+      return;
+    }
+    const baseUrl = getApiBaseUrl() ?? DEFAULT_API_BASE_URL;
+    let liveIds: string[];
+    try {
+      liveIds = await fetchLiveModelCatalog(baseUrl, apiKey.trim());
+    } catch {
+      return;
+    }
+    const merged = mergeModelCatalog(liveIds);
+    if (sameModelIds(this.availableModels, merged)) {
+      return;
+    }
+    this.availableModels = merged;
+    try {
+      await this.context.globalState.update(MODEL_CATALOG_CACHE_KEY, {
+        savedAt: Date.now(),
+        models: merged,
+      });
+    } catch {
+      // Cache is best-effort; the in-memory list is already updated.
+    }
+    this.notifyModelsChanged();
+  }
 
   notifyModelsChanged(): void {
     this.modelsChangedEmitter.fire();
@@ -55,7 +113,7 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   ): Promise<vscode.LanguageModelChatInformation[]> {
     const optionsWithConfig = options as PrepareOptionsWithConfiguration;
     const configuredApiKey = this.extractConfiguredApiKey(optionsWithConfig);
-    const models = modelsWithApiKey();
+    const models = modelsWithApiKey(this.availableModels);
 
     if (!configuredApiKey) {
       this.modelApiKeys.clear();
@@ -133,7 +191,7 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     token: vscode.CancellationToken,
     apiKey: string,
   ): Promise<void> {
-    const resolvedModel = getModelById(model.id);
+    const resolvedModel = this.findModel(model.id);
     if (!resolvedModel) {
       throw new Error(`Unsupported model "${model.id}" for MiniMax (coding / Token Plan).`);
     }
@@ -221,6 +279,11 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     }
   }
 
+  private findModel(id: string): ModelInfo | undefined {
+    const live = this.availableModels.find((model) => model.id === id);
+    return live ?? getModelById(id);
+  }
+
   private extractConfiguredApiKey(
     options: PrepareOptionsWithConfiguration,
   ): string | undefined {
@@ -237,4 +300,45 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     const normalized = apiKey.trim();
     return normalized.length > 0 ? normalized : undefined;
   }
+}
+
+const MODEL_CATALOG_CACHE_KEY = "minimax.modelCatalog.v1";
+
+interface ModelCatalogCache {
+  savedAt?: unknown;
+  models?: unknown;
+}
+
+function readCachedCatalog(globalState: vscode.Memento): readonly ModelInfo[] {
+  try {
+    const cached = globalState.get<ModelCatalogCache>(MODEL_CATALOG_CACHE_KEY);
+    if (!cached || !Array.isArray(cached.models)) {
+      return SUPPORTED_MODELS;
+    }
+    const models = cached.models.filter(isValidCachedModel);
+    return models.length > 0 ? models : SUPPORTED_MODELS;
+  } catch {
+    return SUPPORTED_MODELS;
+  }
+}
+
+function isValidCachedModel(value: unknown): value is ModelInfo {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.name === "string" &&
+    typeof candidate.contextLength === "number" &&
+    typeof candidate.maxInputTokens === "number" &&
+    typeof candidate.maxOutputTokens === "number"
+  );
+}
+
+function sameModelIds(a: readonly ModelInfo[], b: readonly ModelInfo[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  return a.every((model, index) => model.id === b[index]?.id);
 }

@@ -1,7 +1,6 @@
 ﻿import * as vscode from "vscode";
 import {
   SUPPORTED_MODELS,
-  getModelById,
   type ModelInfo,
 } from "../api/types";
 
@@ -20,8 +19,10 @@ export function getApiBaseUrl(): string | undefined {
   return undefined;
 }
 
-export function modelsWithApiKey(): vscode.LanguageModelChatInformation[] {
-  const visibleModels = getVisibleModels();
+export function modelsWithApiKey(
+  allModels: readonly ModelInfo[] = SUPPORTED_MODELS,
+): vscode.LanguageModelChatInformation[] {
+  const visibleModels = getVisibleModels(allModels);
   return visibleModels.map(
     (model) =>
       ({
@@ -36,13 +37,13 @@ export function modelsWithApiKey(): vscode.LanguageModelChatInformation[] {
         isUserSelectable: true,
         capabilities: {
           toolCalling: true,
-          imageInput: model.id === "MiniMax-M3",
+          imageInput: model.imageInput ?? model.id === "MiniMax-M3",
         },
       }) as vscode.LanguageModelChatInformation,
   );
 }
 
-function getModelVersion(modelId: ModelInfo["id"]): string {
+function getModelVersion(modelId: string): string {
   switch (modelId) {
     case "MiniMax-M3":
       return "3";
@@ -60,23 +61,28 @@ function getModelVersion(modelId: ModelInfo["id"]): string {
       return "2.1-highspeed";
     case "MiniMax-M2":
       return "2";
+    default:
+      return modelId.replace(/^MiniMax-/i, "") || modelId;
   }
 }
 
-function getVisibleModels(): readonly ModelInfo[] {
+export function getVisibleModels(
+  allModels: readonly ModelInfo[] = SUPPORTED_MODELS,
+): readonly ModelInfo[] {
+  const live = allModels.length > 0 ? allModels : SUPPORTED_MODELS;
   const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
   const raw = config.get<unknown>(VISIBLE_MODELS_KEY);
   if (!Array.isArray(raw)) {
-    return SUPPORTED_MODELS;
+    return [...live];
   }
 
+  // NB: the package.json enum for minimax.visibleModels is suggestions-only,
+  // so live ids absent from it must still be selectable here.
   const configuredIds = new Set(
-    raw
-      .filter((value): value is string => typeof value === "string")
-      .filter((id) => getModelById(id) !== undefined),
+    raw.filter((value): value is string => typeof value === "string"),
   );
-  const visibleModels = SUPPORTED_MODELS.filter((model) => configuredIds.has(model.id));
-  return visibleModels.length > 0 ? visibleModels : SUPPORTED_MODELS;
+  const visibleModels = live.filter((model) => configuredIds.has(model.id));
+  return visibleModels.length > 0 ? visibleModels : [...live];
 }
 
 export function resolveMaxTokens(

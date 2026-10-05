@@ -13,9 +13,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const authManager = new MiniMaxAuthentication(context.secrets);
   const apiClient = new MiniMaxClient();
   const tokenCounter = new TokenCounter();
-  const provider = new MiniMaxProvider(apiClient, authManager, tokenCounter);
+  const provider = new MiniMaxProvider(apiClient, authManager, tokenCounter, context);
 
   context.subscriptions.push(
+    provider,
     vscode.lm.registerLanguageModelChatProvider("minimax", provider),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (
@@ -23,6 +24,7 @@ export function activate(context: vscode.ExtensionContext): void {
         event.affectsConfiguration(`${CONFIG_SECTION}.${API_BASE_URL_KEY}`)
       ) {
         provider.notifyModelsChanged();
+        void provider.refreshModels();
       }
     }),
     vscode.commands.registerCommand("minimax.switchToGlobal", () => {
@@ -31,6 +33,7 @@ export function activate(context: vscode.ExtensionContext): void {
         .update(API_BASE_URL_KEY, "https://api.minimax.io/v1", vscode.ConfigurationTarget.Global)
         .then(() => {
           provider.notifyModelsChanged();
+          void provider.refreshModels();
           vscode.window.showInformationMessage("MiniMax: Switched to Global API (api.minimax.io)");
         });
     }),
@@ -40,6 +43,7 @@ export function activate(context: vscode.ExtensionContext): void {
         .update(API_BASE_URL_KEY, "https://api.minimaxi.com/v1", vscode.ConfigurationTarget.Global)
         .then(() => {
           provider.notifyModelsChanged();
+          void provider.refreshModels();
           vscode.window.showInformationMessage("MiniMax: Switched to Chinese API (api.minimaxi.com)");
         });
     }),
