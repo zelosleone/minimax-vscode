@@ -100,7 +100,14 @@ const CLOSE_LEN = CLOSE_TAG.length;
 
 export class InlineThinkingParser {
   private inside = false;
+  /** No tag or reasoning field seen yet: M3 can start thinking without "<think>". */
+  private untagged = true;
   private carry = "";
+
+  /** Reasoning arrives in its own fields, so content holds only the answer. */
+  reasoningSeparated(): void {
+    this.untagged = false;
+  }
 
   feed(content: string): { cleaned: string; thinking: string } {
     let cleaned = "";
@@ -130,14 +137,26 @@ export class InlineThinkingParser {
       }
 
       const oi = remaining.indexOf(OPEN_TAG);
+      const ci = this.untagged ? remaining.indexOf(CLOSE_TAG) : -1;
+      if (ci !== -1 && (oi === -1 || ci < oi)) {
+        // Thinking that began without "<think>": its close tag must not reach the answer.
+        thinking += remaining.slice(0, ci);
+        remaining = remaining.slice(ci + CLOSE_LEN);
+        this.untagged = false;
+        continue;
+      }
       if (oi !== -1) {
         cleaned += remaining.slice(0, oi);
         remaining = remaining.slice(oi + OPEN_LEN);
         this.inside = true;
+        this.untagged = false;
         continue;
       }
 
-      const keep = getTagPrefixSuffixLength(remaining, OPEN_TAG);
+      const keep = Math.max(
+        getTagPrefixSuffixLength(remaining, OPEN_TAG),
+        this.untagged ? getTagPrefixSuffixLength(remaining, CLOSE_TAG) : 0,
+      );
       if (keep > 0) {
         cleaned += remaining.slice(0, remaining.length - keep);
         this.carry = remaining.slice(remaining.length - keep);
@@ -152,6 +171,7 @@ export class InlineThinkingParser {
 
   reset(): void {
     this.inside = false;
+    this.untagged = true;
     this.carry = "";
   }
 }

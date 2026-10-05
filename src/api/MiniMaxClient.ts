@@ -71,8 +71,9 @@ export class MiniMaxClient {
         (params as ChatCompletionCreateParamsStreaming & { tool_choice?: "auto" | "required" }).tool_choice =
           options.toolChoice;
       }
-      (params as ChatCompletionCreateParamsStreaming & { extra_body?: { reasoning_split?: boolean } }).extra_body =
-        { reasoning_split: options?.reasoningSplit ?? true };
+      // A top-level body field: Python's extra_body is flattened into the body, the Node SDK sends it as-is.
+      (params as ChatCompletionCreateParamsStreaming & { reasoning_split?: boolean }).reasoning_split =
+        options?.reasoningSplit ?? true;
       params.stream_options = { include_usage: true };
 
       const stream = (await client.chat.completions.create(params, {

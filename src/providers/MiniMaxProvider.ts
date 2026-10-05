@@ -308,6 +308,9 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
         const reasoningContent = (choice.delta as { reasoning_content?: string } | undefined)
           ?.reasoning_content;
 
+        if (latestReasoning || reasoningContent) {
+          inlineParser.reasoningSeparated();
+        }
         if (latestReasoning) {
           const newReasoning = latestReasoning.text.startsWith(reasoningBuffer)
             ? latestReasoning.text.slice(reasoningBuffer.length)
