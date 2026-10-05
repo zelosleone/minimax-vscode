@@ -1,15 +1,21 @@
-﻿import * as vscode from "vscode";
+import * as vscode from "vscode";
 import { MiniMaxClient, type ChatOptions } from "../api/MiniMaxClient";
 import { MiniMaxError } from "../api/MiniMaxError";
 import {
   DEFAULT_API_BASE_URL,
-  SUPPORTED_MODELS,
   fetchLiveModelCatalog,
-  getModelById,
-  mergeModelCatalog,
-  resolveModelIdForApi,
+  humanizeModelId,
+  type LiveModelEntry,
   type ModelInfo,
 } from "../api/types";
+import {
+  reasoningChoices,
+  reasoningRequestFields,
+  resolveModelsDev,
+  resolveReasoningChoice,
+  tokenLimits,
+  type ModelsDevCache,
+} from "../modelsDev";
 import { convertMessages } from "../utils/MessageConverter";
 import {
   getApiBaseUrl,
@@ -40,14 +46,19 @@ type PrepareOptionsWithConfiguration = vscode.PrepareLanguageModelChatModelOptio
   configuration?: Record<string, unknown>;
 };
 
+type ResponseOptionsWithEffort = vscode.ProvideLanguageModelChatResponseOptions & {
+  modelConfiguration?: { reasoningEffort?: unknown };
+  configuration?: { reasoningEffort?: unknown };
+};
+
 export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode.Disposable {
   private readonly modelsChangedEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this.modelsChangedEmitter.event;
 
   private readonly modelApiKeys = new Map<string, string>();
-  private lastPromptTokens = 0;
 
   private availableModels: readonly ModelInfo[];
+  private devCache: ModelsDevCache | undefined;
   private readonly refreshTimer: ReturnType<typeof setInterval>;
 
   constructor(
@@ -56,7 +67,9 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     private readonly tokenCounter: TokenCounter,
     private readonly context: vscode.ExtensionContext,
   ) {
-    this.availableModels = readCachedCatalog(context.globalState);
+    const persisted = readPersistedCatalog(context.globalState);
+    this.availableModels = persisted.models;
+    this.devCache = persisted.devCache;
     void this.refreshModels();
     this.refreshTimer = setInterval(() => {
       void this.refreshModels();
@@ -68,8 +81,9 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     this.modelsChangedEmitter.dispose();
   }
 
-  /** Re-fetch GET {baseUrl}/models, merge with the known table, persist the
-   * catalog, and fire onDidChange only when the id list actually changed. */
+  /** Re-fetch GET {baseUrl}/models, resolve limits from the provider fields
+   * first and models.dev second, persist, and fire onDidChange only when the
+   * served list actually changed. */
   async refreshModels(): Promise<void> {
     let apiKey: string | undefined;
     try {
@@ -81,21 +95,64 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
       return;
     }
     const baseUrl = getApiBaseUrl() ?? DEFAULT_API_BASE_URL;
-    let liveIds: string[];
+    let live: LiveModelEntry[];
     try {
-      liveIds = await fetchLiveModelCatalog(baseUrl, apiKey.trim());
+      live = await fetchLiveModelCatalog(baseUrl, apiKey.trim());
     } catch {
       return;
     }
-    const merged = mergeModelCatalog(liveIds);
-    if (sameModelIds(this.availableModels, merged)) {
+    const ids = live.map((entry) => entry.id);
+    let nextDevCache: ModelsDevCache;
+    try {
+      nextDevCache = await resolveModelsDev(baseUrl, ids, this.devCache);
+    } catch {
+      // models.dev failed: keep the previous catalog, do not invent data.
       return;
     }
-    this.availableModels = merged;
+    const byId = new Map(live.map((entry) => [entry.id, entry]));
+    const built: ModelInfo[] = [];
+    for (const id of ids) {
+      const entry = byId.get(id);
+      if (!entry) {
+        continue;
+      }
+      const dev = nextDevCache.models[id] ?? undefined;
+      const context = entry.context_window ?? dev?.limit?.context;
+      const output = entry.max_output_tokens ?? dev?.limit?.output;
+      if (
+        typeof context !== "number" ||
+        typeof output !== "number" ||
+        !Number.isFinite(context) ||
+        !Number.isFinite(output) ||
+        context <= 0 ||
+        output <= 0
+      ) {
+        console.warn(`[minimax] Skipping live model "${id}": no context/output limits from the provider or models.dev.`);
+        continue;
+      }
+      const limits = tokenLimits(context, output);
+      const inputModalities = entry.input_modalities ?? dev?.modalities?.input;
+      built.push({
+        id,
+        name: entry.name ?? dev?.name ?? humanizeModelId(id),
+        contextLength: limits.maxContextWindowTokens,
+        maxInputTokens: limits.maxInputTokens,
+        maxOutputTokens: limits.maxOutputTokens,
+        imageInput:
+          Array.isArray(inputModalities) && inputModalities.includes("image"),
+        toolCall: dev?.tool_call !== false,
+        choices: reasoningChoices(dev?.reasoning_options, undefined),
+      });
+    }
+    this.devCache = nextDevCache;
+    if (JSON.stringify(built) === JSON.stringify(this.availableModels)) {
+      return;
+    }
+    this.availableModels = built;
     try {
       await this.context.globalState.update(MODEL_CATALOG_CACHE_KEY, {
-        savedAt: Date.now(),
-        models: merged,
+        devCache: nextDevCache,
+        models: built,
       });
     } catch {
       // Cache is best-effort; the in-memory list is already updated.
@@ -171,18 +228,8 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     if (typeof text === "string") {
       return Promise.resolve(this.tokenCounter.estimateTokens(text));
     }
-
-    let tokens = 0;
-    for (const part of text.content) {
-      if (part instanceof vscode.LanguageModelTextPart) {
-        tokens += this.tokenCounter.estimateTokens(part.value);
-      } else if (part instanceof vscode.LanguageModelDataPart) {
-        tokens += Math.ceil(part.data.length / 4);
-      }
-    }
-    return Promise.resolve(tokens);
+    return Promise.resolve(this.tokenCounter.estimatePayload(convertMessages([text])));
   }
-
   private async streamResponse(
     model: vscode.LanguageModelChatInformation,
     messages: readonly vscode.LanguageModelChatRequestMessage[],
@@ -201,7 +248,18 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     const inlineParser = new InlineThinkingParser();
     const pendingToolCalls = new Map<number, AccumulatedToolCall>();
     let toolCallsEmitted = false;
+    const converted = convertMessages(messages);
     const tools = convertTools(options.tools);
+    const requestChars = this.tokenCounter.payloadChars({ messages: converted, tools: tools ?? [] });
+
+    const optionsWithEffort = options as ResponseOptionsWithEffort;
+    const configuredEffort =
+      optionsWithEffort.modelConfiguration?.reasoningEffort ??
+      optionsWithEffort.configuration?.reasoningEffort;
+    const reasoningFields = reasoningRequestFields(
+      resolveReasoningChoice(resolvedModel.choices, configuredEffort),
+      "adaptive",
+    );
 
     const chatOptions: ChatOptions = {
       maxTokens: resolveMaxTokens(options, resolvedModel),
@@ -211,6 +269,7 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
       tools,
       toolChoice: resolveToolChoice(options, tools),
       reasoningSplit: true,
+      reasoningFields,
     };
     const topP = resolveTopP(options);
     if (topP !== undefined) {
@@ -218,8 +277,8 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     }
 
     const stream = this.apiClient.streamChat(
-      resolveModelIdForApi(resolvedModel.id),
-      convertMessages(messages),
+      resolvedModel.id,
+      converted,
       chatOptions,
       token,
     );
@@ -272,16 +331,46 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
           toolCallsEmitted = true;
         }
       }
-      
-      if (chunk.usage?.prompt_tokens) {
-        this.lastPromptTokens = chunk.usage.prompt_tokens;
-      }
+
+      this.reportUsage(chunk, requestChars, progress);
     }
   }
 
+  private reportUsage(
+    chunk: { usage?: unknown },
+    requestChars: number,
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  ): void {
+    const usage = chunk.usage as
+      | {
+          prompt_tokens?: unknown;
+          completion_tokens?: unknown;
+          total_tokens?: unknown;
+          prompt_tokens_details?: { cached_tokens?: unknown };
+        }
+      | undefined;
+    if (!usage || typeof usage.prompt_tokens !== "number" || usage.prompt_tokens <= 0) {
+      return;
+    }
+    this.tokenCounter.calibrate(requestChars, usage.prompt_tokens);
+    const cachedTokens = usage.prompt_tokens_details?.cached_tokens;
+    const payload = JSON.stringify({
+      prompt_tokens: usage.prompt_tokens,
+      completion_tokens: typeof usage.completion_tokens === "number" ? usage.completion_tokens : 0,
+      total_tokens: typeof usage.total_tokens === "number" ? usage.total_tokens : 0,
+      prompt_tokens_details: {
+        cached_tokens: typeof cachedTokens === "number" ? cachedTokens : 0,
+      },
+    });
+    const DataPartCtor = vscode.LanguageModelDataPart as unknown as new (
+      data: Uint8Array,
+      mimeType: string,
+    ) => vscode.LanguageModelResponsePart;
+    progress.report(new DataPartCtor(new TextEncoder().encode(payload), "usage"));
+  }
+
   private findModel(id: string): ModelInfo | undefined {
-    const live = this.availableModels.find((model) => model.id === id);
-    return live ?? getModelById(id);
+    return this.availableModels.find((model) => model.id === id);
   }
 
   private extractConfiguredApiKey(
@@ -302,43 +391,66 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
   }
 }
 
-const MODEL_CATALOG_CACHE_KEY = "minimax.modelCatalog.v1";
+const MODEL_CATALOG_CACHE_KEY = "minimax.modelCatalog.v2";
 
-interface ModelCatalogCache {
-  savedAt?: unknown;
+interface PersistedCatalog {
+  devCache?: unknown;
   models?: unknown;
 }
 
-function readCachedCatalog(globalState: vscode.Memento): readonly ModelInfo[] {
+function readPersistedCatalog(globalState: vscode.Memento): {
+  devCache: ModelsDevCache | undefined;
+  models: ModelInfo[];
+} {
   try {
-    const cached = globalState.get<ModelCatalogCache>(MODEL_CATALOG_CACHE_KEY);
-    if (!cached || !Array.isArray(cached.models)) {
-      return SUPPORTED_MODELS;
-    }
-    const models = cached.models.filter(isValidCachedModel);
-    return models.length > 0 ? models : SUPPORTED_MODELS;
+    const cached = globalState.get<PersistedCatalog>(MODEL_CATALOG_CACHE_KEY);
+    const devCache = isValidDevCache(cached?.devCache) ? cached.devCache : undefined;
+    const models = Array.isArray(cached?.models)
+      ? cached.models.filter(isValidPersistedModel)
+      : [];
+    return { devCache, models };
   } catch {
-    return SUPPORTED_MODELS;
+    return { devCache: undefined, models: [] };
   }
 }
 
-function isValidCachedModel(value: unknown): value is ModelInfo {
+function isValidDevCache(value: unknown): value is ModelsDevCache {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as { models?: unknown };
+  return !!candidate.models && typeof candidate.models === "object" && !Array.isArray(candidate.models);
+}
+
+function isValidPersistedModel(value: unknown): value is ModelInfo {
   if (!value || typeof value !== "object") {
     return false;
   }
   const candidate = value as Record<string, unknown>;
-  return (
-    typeof candidate.id === "string" &&
-    typeof candidate.name === "string" &&
-    typeof candidate.contextLength === "number" &&
-    typeof candidate.maxInputTokens === "number" &&
-    typeof candidate.maxOutputTokens === "number"
-  );
-}
-
-function sameModelIds(a: readonly ModelInfo[], b: readonly ModelInfo[]): boolean {
-  if (a.length !== b.length) {
+  if (
+    typeof candidate.id !== "string" ||
+    typeof candidate.name !== "string" ||
+    typeof candidate.contextLength !== "number" ||
+    typeof candidate.maxInputTokens !== "number" ||
+    typeof candidate.maxOutputTokens !== "number" ||
+    typeof candidate.imageInput !== "boolean"
+  ) {
     return false;
   }
-  return a.every((model, index) => model.id === b[index]?.id);
+  if (candidate.choices !== undefined && !isValidPersistedChoices(candidate.choices)) {
+    return false;
+  }
+  return true;
+}
+
+function isValidPersistedChoices(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as { values?: unknown; defaultValue?: unknown };
+  return (
+    Array.isArray(candidate.values) &&
+    candidate.values.every((entry) => typeof entry === "string") &&
+    typeof candidate.defaultValue === "string"
+  );
 }

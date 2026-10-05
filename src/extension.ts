@@ -12,7 +12,7 @@ import {
 export function activate(context: vscode.ExtensionContext): void {
   const authManager = new MiniMaxAuthentication(context.secrets);
   const apiClient = new MiniMaxClient();
-  const tokenCounter = new TokenCounter();
+  const tokenCounter = new TokenCounter(context.globalState);
   const provider = new MiniMaxProvider(apiClient, authManager, tokenCounter, context);
 
   context.subscriptions.push(

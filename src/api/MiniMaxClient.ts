@@ -14,12 +14,15 @@ export { MiniMaxError };
 export interface ChatOptions {
   temperature?: number;
   topP?: number;
+  /** Sent as max_tokens only when defined (Copilot-passed, capped by the caller). */
   maxTokens?: number;
   apiKey?: string;
   baseUrl?: string;
   tools?: MiniMaxToolDefinition[];
   toolChoice?: "auto" | "required";
   reasoningSplit?: boolean;
+  /** MiniMax OpenAI-compatible reasoning fields: thinking + reasoning_effort. */
+  reasoningFields?: Record<string, unknown>;
 }
 
 export class MiniMaxClient {
@@ -50,8 +53,13 @@ export class MiniMaxClient {
         stream: true,
         messages: this.toOpenAiMessages(messages),
         temperature: options?.temperature ?? 1,
-        max_tokens: options?.maxTokens ?? 8192,
       };
+      if (typeof options?.maxTokens === "number" && options.maxTokens > 0) {
+        params.max_tokens = Math.floor(options.maxTokens);
+      }
+      if (options?.reasoningFields) {
+        Object.assign(params, options.reasoningFields);
+      }
       if (typeof options?.topP === "number" && options.topP > 0 && options.topP <= 1) {
         (params as ChatCompletionCreateParamsStreaming & { top_p?: number }).top_p = options.topP;
       }

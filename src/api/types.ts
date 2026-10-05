@@ -1,3 +1,5 @@
+import type { ReasoningChoices } from "../modelsDev";
+
 export interface MiniMaxReasoningDetail {
   text: string;
   id?: string;
@@ -64,68 +66,30 @@ export interface MiniMaxToolDefinition {
   };
 }
 
-export const MODEL_IDS = [
-  "MiniMax-M3",
-  "MiniMax-M2.7",
-  "MiniMax-M2.7-highspeed",
-  "MiniMax-M2.5",
-  "MiniMax-M2.5-highspeed",
-  "MiniMax-M2.1",
-  "MiniMax-M2.1-highspeed",
-  "MiniMax-M2",
-] as const;
+export const DEFAULT_API_BASE_URL = "https://api.minimax.io/v1";
 
-export type ModelId = (typeof MODEL_IDS)[number];
+/** One entry from the provider's live GET {baseUrl}/models. Only the id is
+ * guaranteed; limit / modality fields are picked up when the provider sends them. */
+export interface LiveModelEntry {
+  id: string;
+  name?: string;
+  context_window?: number;
+  max_output_tokens?: number;
+  input_modalities?: string[];
+}
 
+/** Live-only catalog entry: limits resolved from the provider's own /models
+ * fields first, else models.dev. `choices` holds the live reasoning controls
+ * (undefined when the model exposes none). */
 export interface ModelInfo {
   id: string;
   name: string;
   contextLength: number;
   maxInputTokens: number;
   maxOutputTokens: number;
-  apiModelId?: string;
-  imageInput?: boolean;
-}
-
-export const DEFAULT_MODEL_ID: ModelId = "MiniMax-M3";
-
-const CTX_1M = 1_000_000;
-const CTX_204K = 204_800;
-const OUT_131K = 131_072;
-const OUT_128K = 128_000;
-
-export const DEFAULT_API_BASE_URL = "https://api.minimax.io/v1";
-
-export const SUPPORTED_MODELS: readonly ModelInfo[] = [
-  { id: "MiniMax-M3", name: "MiniMax M3", contextLength: CTX_1M, maxInputTokens: 1_000_000, maxOutputTokens: OUT_131K, imageInput: true },
-  { id: "MiniMax-M2.7", name: "MiniMax M2.7", contextLength: CTX_204K, maxInputTokens: 200_000, maxOutputTokens: OUT_131K },
-  { id: "MiniMax-M2.7-highspeed", name: "MiniMax M2.7 (High-Speed)", contextLength: CTX_204K, maxInputTokens: 200_000, maxOutputTokens: OUT_131K },
-  { id: "MiniMax-M2.5", name: "MiniMax M2.5", contextLength: CTX_204K, maxInputTokens: 196_000, maxOutputTokens: OUT_128K },
-  { id: "MiniMax-M2.5-highspeed", name: "MiniMax M2.5 (High-Speed)", contextLength: CTX_204K, maxInputTokens: 196_000, maxOutputTokens: OUT_128K },
-  { id: "MiniMax-M2.1", name: "MiniMax M2.1", contextLength: CTX_204K, maxInputTokens: 196_000, maxOutputTokens: OUT_128K },
-  { id: "MiniMax-M2.1-highspeed", name: "MiniMax M2.1 (High-Speed)", contextLength: CTX_204K, maxInputTokens: 196_000, maxOutputTokens: OUT_128K },
-  { id: "MiniMax-M2", name: "MiniMax M2", contextLength: CTX_204K, maxInputTokens: 192_000, maxOutputTokens: OUT_128K },
-];
-
-const MODEL_BY_ID: Readonly<Record<ModelId, ModelInfo>> = Object.fromEntries(
-  SUPPORTED_MODELS.map((model) => [model.id, model]),
-) as Record<ModelId, ModelInfo>;
-
-export function resolveModelIdForApi(id: string): string {
-  const info = getModelById(id);
-  if (!info) {
-    return id;
-  }
-  return info.apiModelId ?? info.id;
-}
-
-export function getModelById(id: ModelId): ModelInfo;
-export function getModelById(id: string): ModelInfo | undefined;
-export function getModelById(id: string): ModelInfo | undefined {
-  if (Object.prototype.hasOwnProperty.call(MODEL_BY_ID, id)) {
-    return MODEL_BY_ID[id as ModelId];
-  }
-  return undefined;
+  imageInput: boolean;
+  toolCall: boolean;
+  choices?: ReasoningChoices;
 }
 
 /** Ids matching this pattern are never chat models (TTS / music / video / etc.)
@@ -154,59 +118,28 @@ export function humanizeModelId(id: string): string {
   return words.join(" ");
 }
 
-const FALLBACK_CONTEXT_LENGTH = 204_800;
-const FALLBACK_MAX_INPUT_TOKENS = 192_000;
-const FALLBACK_MAX_OUTPUT_TOKENS = 128_000;
-
-/** Resolve a live model id to a ModelInfo: known hit returns the enriched
- * entry, otherwise infer sensible chat defaults. */
-export function resolveLiveModel(id: string): ModelInfo {
-  const known = getModelById(id);
-  if (known) {
-    return known;
-  }
-  return {
-    id,
-    name: humanizeModelId(id),
-    contextLength: FALLBACK_CONTEXT_LENGTH,
-    maxInputTokens: FALLBACK_MAX_INPUT_TOKENS,
-    maxOutputTokens: FALLBACK_MAX_OUTPUT_TOKENS,
-    imageInput: /m3/i.test(id),
-  };
-}
-
-/** Merge live ids with the known table: live order first, then any known
- * models the API did not report (so a sparse /models response never hides
- * a known chat model). */
-export function mergeModelCatalog(liveIds: readonly string[]): ModelInfo[] {
-  const seen = new Set<string>();
-  const merged: ModelInfo[] = [];
-  for (const id of liveIds) {
-    if (typeof id !== "string" || id.length === 0 || seen.has(id)) {
-      continue;
-    }
-    seen.add(id);
-    merged.push(resolveLiveModel(id));
-  }
-  for (const known of SUPPORTED_MODELS) {
-    if (!seen.has(known.id)) {
-      seen.add(known.id);
-      merged.push(known);
-    }
-  }
-  return merged;
-}
-
 interface ModelsApiShape {
-  data?: Array<{ id?: unknown }>;
+  data?: Array<{
+    id?: unknown;
+    name?: unknown;
+    context_window?: unknown;
+    max_output_tokens?: unknown;
+    input_modalities?: unknown;
+  }>;
 }
 
-/** GET {baseUrl}/models with a Bearer key; returns chat-model ids only.
+function readPositiveInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+/** GET {baseUrl}/models with a Bearer key; returns chat-model entries only.
  * Throws on network/HTTP errors so the caller can keep the last good list. */
 export async function fetchLiveModelCatalog(
   baseUrl: string,
   apiKey: string,
-): Promise<string[]> {
+): Promise<LiveModelEntry[]> {
   const normalizedBase = baseUrl.trim().replace(/\/+$/, "");
   const fetchFn = globalThis.fetch;
   if (typeof fetchFn !== "function") {
@@ -226,11 +159,35 @@ export async function fetchLiveModelCatalog(
   if (!body || !Array.isArray(body.data)) {
     throw new Error("GET /models returned an unexpected shape (missing data[])");
   }
-  const ids: string[] = [];
-  for (const entry of body.data) {
-    if (entry && typeof entry.id === "string" && isChatModelId(entry.id)) {
-      ids.push(entry.id);
+  const entries: LiveModelEntry[] = [];
+  for (const item of body.data) {
+    if (!item || typeof item.id !== "string" || item.id.length === 0) {
+      continue;
     }
+    if (!isChatModelId(item.id)) {
+      continue;
+    }
+    const entry: LiveModelEntry = { id: item.id };
+    if (typeof item.name === "string" && item.name.length > 0) {
+      entry.name = item.name;
+    }
+    const contextWindow = readPositiveInt(item.context_window);
+    if (contextWindow !== undefined) {
+      entry.context_window = contextWindow;
+    }
+    const maxOutput = readPositiveInt(item.max_output_tokens);
+    if (maxOutput !== undefined) {
+      entry.max_output_tokens = maxOutput;
+    }
+    if (Array.isArray(item.input_modalities)) {
+      const modalities = item.input_modalities.filter(
+        (modality): modality is string => typeof modality === "string",
+      );
+      if (modalities.length > 0) {
+        entry.input_modalities = modalities;
+      }
+    }
+    entries.push(entry);
   }
-  return ids;
+  return entries;
 }

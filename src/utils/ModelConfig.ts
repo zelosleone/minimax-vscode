@@ -1,14 +1,11 @@
-﻿import * as vscode from "vscode";
-import {
-  SUPPORTED_MODELS,
-  type ModelInfo,
-} from "../api/types";
+import * as vscode from "vscode";
+import { reasoningSchema, tokenLimits } from "../modelsDev";
+import type { ModelInfo } from "../api/types";
 
 export const CONFIG_SECTION = "minimax";
 export const VISIBLE_MODELS_KEY = "visibleModels";
 export const API_BASE_URL_KEY = "apiBaseUrl";
 export const DEFAULT_TEMPERATURE = 1;
-export const DEFAULT_MAX_TOKENS = 8192;
 
 export function getApiBaseUrl(): string | undefined {
   const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
@@ -20,7 +17,7 @@ export function getApiBaseUrl(): string | undefined {
 }
 
 export function modelsWithApiKey(
-  allModels: readonly ModelInfo[] = SUPPORTED_MODELS,
+  allModels: readonly ModelInfo[],
 ): vscode.LanguageModelChatInformation[] {
   const visibleModels = getVisibleModels(allModels);
   return visibleModels.map(
@@ -31,70 +28,55 @@ export function modelsWithApiKey(
         detail: "Token Plan",
         tooltip: `${model.name} -- in ${model.maxInputTokens.toLocaleString()} / out ${model.maxOutputTokens.toLocaleString()} max tokens (context up to ${model.contextLength.toLocaleString()})`,
         family: "minimax",
-        version: getModelVersion(model.id),
-        maxInputTokens: model.maxInputTokens,
-        maxOutputTokens: model.maxOutputTokens,
-        isUserSelectable: true,
+        version: model.id,
+        ...tokenLimits(model.contextLength, model.maxOutputTokens),
+        isBYOK: true,
         capabilities: {
-          toolCalling: true,
-          imageInput: model.imageInput ?? model.id === "MiniMax-M3",
+          toolCalling: model.toolCall,
+          imageInput: model.imageInput,
         },
-      }) as vscode.LanguageModelChatInformation,
+        ...(model.choices ? { configurationSchema: reasoningSchema(model.choices) } : {}),
+      }) as unknown as vscode.LanguageModelChatInformation,
   );
 }
 
-function getModelVersion(modelId: string): string {
-  switch (modelId) {
-    case "MiniMax-M3":
-      return "3";
-    case "MiniMax-M2.7":
-      return "2.7";
-    case "MiniMax-M2.7-highspeed":
-      return "2.7-highspeed";
-    case "MiniMax-M2.5":
-      return "2.5";
-    case "MiniMax-M2.5-highspeed":
-      return "2.5-highspeed";
-    case "MiniMax-M2.1":
-      return "2.1";
-    case "MiniMax-M2.1-highspeed":
-      return "2.1-highspeed";
-    case "MiniMax-M2":
-      return "2";
-    default:
-      return modelId.replace(/^MiniMax-/i, "") || modelId;
+export function getVisibleModels(allModels: readonly ModelInfo[]): readonly ModelInfo[] {
+  if (allModels.length === 0) {
+    return [];
   }
-}
-
-export function getVisibleModels(
-  allModels: readonly ModelInfo[] = SUPPORTED_MODELS,
-): readonly ModelInfo[] {
-  const live = allModels.length > 0 ? allModels : SUPPORTED_MODELS;
   const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
   const raw = config.get<unknown>(VISIBLE_MODELS_KEY);
   if (!Array.isArray(raw)) {
-    return [...live];
+    return [...allModels];
   }
 
-  // NB: the package.json enum for minimax.visibleModels is suggestions-only,
-  // so live ids absent from it must still be selectable here.
+  // NB: minimax.visibleModels holds plain live ids (no enum); an empty list
+  // means "show every live model".
   const configuredIds = new Set(
-    raw.filter((value): value is string => typeof value === "string"),
+    raw.filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    ),
   );
-  const visibleModels = live.filter((model) => configuredIds.has(model.id));
-  return visibleModels.length > 0 ? visibleModels : [...live];
+  if (configuredIds.size === 0) {
+    return [...allModels];
+  }
+  const visibleModels = allModels.filter((model) => configuredIds.has(model.id));
+  return visibleModels.length > 0 ? visibleModels : [...allModels];
 }
 
+/** max_tokens is sent ONLY when Copilot passes options.modelOptions.maxTokens
+ * (capped by the live maxOutputTokens); otherwise it is omitted, because
+ * MiniMax counts thinking tokens toward max_tokens and a low default would
+ * truncate high-effort answers with empty content. */
 export function resolveMaxTokens(
   options: vscode.ProvideLanguageModelChatResponseOptions,
   model: ModelInfo,
-): number {
+): number | undefined {
   const value = options.modelOptions?.maxTokens;
-  const base =
-    typeof value === "number" && Number.isInteger(value) && value > 0
-      ? value
-      : DEFAULT_MAX_TOKENS;
-  return Math.min(base, model.maxOutputTokens);
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return Math.min(value, model.maxOutputTokens);
+  }
+  return undefined;
 }
 
 export function resolveTemperature(
