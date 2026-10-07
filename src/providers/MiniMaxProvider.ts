@@ -113,24 +113,27 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     }
     const byId = new Map(live.map((entry) => [entry.id, entry]));
     const built: ModelInfo[] = [];
+    const defaultedIds: string[] = [];
     for (const id of ids) {
       const entry = byId.get(id);
       if (!entry) {
         continue;
       }
       const dev = nextDevCache.models[id] ?? undefined;
-      const context = entry.context_window ?? dev?.limit?.context;
-      const output = entry.max_output_tokens ?? dev?.limit?.output;
-      if (
-        typeof context !== "number" ||
-        typeof output !== "number" ||
-        !Number.isFinite(context) ||
-        !Number.isFinite(output) ||
-        context <= 0 ||
-        output <= 0
-      ) {
-        console.warn(`[minimax] Skipping live model "${id}": no context/output limits from the provider or models.dev.`);
-        continue;
+      // A model MiniMax lists before models.dev catalogs it still shows up, with safe limits, corrected on the next refresh once models.dev knows it.
+      let context = entry.context_window ?? dev?.limit?.context;
+      let output = entry.max_output_tokens ?? dev?.limit?.output;
+      let usedDefault = false;
+      if (typeof context !== "number" || !Number.isFinite(context) || context <= 0) {
+        context = 131072;
+        usedDefault = true;
+      }
+      if (typeof output !== "number" || !Number.isFinite(output) || output <= 0) {
+        output = 32768;
+        usedDefault = true;
+      }
+      if (usedDefault) {
+        defaultedIds.push(id);
       }
       const limits = tokenLimits(context, output);
       const inputModalities = entry.input_modalities ?? dev?.modalities?.input;
@@ -145,6 +148,9 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
         toolCall: dev?.tool_call !== false,
         choices: reasoningChoices(dev?.reasoning_options, undefined),
       });
+    }
+    if (defaultedIds.length > 0) {
+      console.info(`[minimax] Using default limits for: ${defaultedIds.join(", ")}.`);
     }
     this.devCache = nextDevCache;
     if (JSON.stringify(built) === JSON.stringify(this.availableModels)) {

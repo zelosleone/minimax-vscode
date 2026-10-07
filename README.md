@@ -6,7 +6,7 @@ Use MiniMax text models from your Token Plan in GitHub Copilot Chat. Speech, vid
 2. In the Copilot Chat model picker, open **Manage Models**, pick **MiniMax** and paste the key.
 3. Pick a MiniMax model and set its reasoning effort right in the picker.
 
-The model list comes live from the MiniMax API, and context windows, image support and effort levels come from [models.dev](https://models.dev), so new models show up without an update. Copilot's context window indicator works as usual.
+The model list comes live from the MiniMax API, and context windows, image support and effort levels come from [models.dev](https://models.dev), so new models show up without an update. Brand-new models appear right away with safe default limits until models.dev lists them. Copilot's context window indicator works as usual.
 
 Reasoning Effort is live per model: Auto, Off and On, or Auto plus levels from Low to Max where the model supports them. Auto sends nothing and lets MiniMax decide. Thinking blocks need VS Code Insiders (proposed API).
 
