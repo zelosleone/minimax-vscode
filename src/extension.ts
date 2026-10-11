@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { MiniMaxProvider } from "./providers/MiniMaxProvider";
 import { MiniMaxAuthentication } from "./providers/MiniMaxAuthentication";
 import { MiniMaxClient } from "./api/MiniMaxClient";
+import { scheduleLodestarNotice } from "./lodestar";
 import { TokenCounter } from "./utils/TokenCounter";
 import {
   CONFIG_SECTION,
@@ -48,6 +49,7 @@ export function activate(context: vscode.ExtensionContext): void {
         });
     }),
   );
+  scheduleLodestarNotice(context);
 }
 
 export function deactivate(): void {}
