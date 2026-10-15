@@ -2,7 +2,7 @@
 
 Use MiniMax text models from your Token Plan in GitHub Copilot Chat. Speech, video and image generation are not included.
 
-> Also from the same developer: [Lodestar](https://marketplace.visualstudio.com/items?itemName=DenizhanDaklr.lodestar) walks you through how code works and reviews your changes, on any model in VS Code, including this extension's. $10, one time.
+> Also from the same developer: [Lodestar](https://marketplace.visualstudio.com/items?itemName=DenizhanDaklr.lodestar) walks you through how code works, explains anything you hover, and reviews your changes on any model in VS Code, including this extension's. 3 free runs included, then $5 one-time.
 
 1. Get a Token Plan API key from [platform.minimax.io](https://platform.minimax.io/user-center/payment/token-plan).
 2. In the Copilot Chat model picker, open **Manage Models**, pick **MiniMax** and paste the key.
