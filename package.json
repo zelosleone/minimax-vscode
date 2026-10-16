@@ -48,6 +48,10 @@
       {
         "command": "minimax.switchToChina",
         "title": "MiniMax: Switch to Chinese API (minimaxi.com)"
+      },
+      {
+        "command": "minimax.refreshModels",
+        "title": "MiniMax: Refresh Models"
       }
     ],
     "configuration": {
@@ -98,7 +102,7 @@
     "build": "node esbuild.mjs --production",
     "watch:esbuild": "node esbuild.mjs --watch",
     "watch:tsc": "tsc -p ./ --noEmit --watch",
-    "test": "node ./out/test/runTest.js"
+    "test": "node test/run-tests.cjs"
   },
   "dependencies": {
     "openai": "^6.5.0"

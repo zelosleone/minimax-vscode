@@ -18,6 +18,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     provider,
+    vscode.commands.registerCommand("minimax.refreshModels", () => provider.refreshModels()),
     vscode.lm.registerLanguageModelChatProvider("minimax", provider),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (

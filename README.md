@@ -18,7 +18,42 @@ Reasoning Effort is live per model: Auto, Off and On, or Auto plus levels from L
 |---|---|
 | `minimax.apiBaseUrl` | `https://api.minimax.io/v1` by default; use `https://api.minimaxi.com/v1` in China. Must end with `/v1`. |
 | `minimax.visibleModels` | Model ids to show. Empty (the default) shows every live model. |
+| **MiniMax: Refresh Models** | Refresh the live catalog immediately instead of waiting for the 30-minute refresh |
 | **MiniMax: Switch to Global API (minimax.io)** | Use the international endpoint |
 | **MiniMax: Switch to Chinese API (minimaxi.com)** | Use the China endpoint |
 
 Requires VS Code 1.111+. MIT license.
+
+## Missing models
+
+MiniMax-M3.1-Flash-Preview is supported by the API, but currently requires an
+[M Plan Subscription Key](https://platform.minimax.io/docs/guides/text-generation).
+Seeing it in MiniMax's web app does not confirm API access for your key.
+
+First update the extension and reload VS Code. In user settings, set
+`minimax.visibleModels` to `[]` to show all live chat models. Check that
+`minimax.apiBaseUrl` matches the platform that issued your Subscription Key:
+`https://api.minimax.io/v1` for Global; the extension's China shortcut uses
+`https://api.minimaxi.com/v1`. Current
+[China documentation](https://platform.minimax.cn/docs/guides/text-generation)
+also lists `https://api.minimax.cn/v1`, which can be entered directly.
+Re-enter the matching key under **Manage Models > MiniMax** after changing regions.
+
+Run **MiniMax: Refresh Models** and check **Output > MiniMax** for catalog failures.
+The catalog refreshes every 30 minutes; its cache is scoped to the endpoint and
+key. On a MiniMax API/network failure, the last good catalog for that scope is
+kept. A models.dev failure uses cached metadata or default limits while still
+showing all live model ids. Models omitted by the API cannot be added through
+`minimax.visibleModels`; `minimax.customModels` is not supported.
+
+To distinguish API access from an extension issue, request `GET {baseUrl}/models`
+with the same key locally and check for the exact id
+`MiniMax-M3.1-Flash-Preview` in `data[].id`. A successful
+`POST {baseUrl}/chat/completions` using that id confirms inference access;
+a catalog listing alone does not. Never post your key or Authorization header.
+
+## Development
+
+Run `npm ci`, `npm test`, `npm run compile`, and `npm run build`. Tests exercise
+catalog refreshes with mocked HTTP/VS Code APIs; they do not require credentials
+or make inference calls.
