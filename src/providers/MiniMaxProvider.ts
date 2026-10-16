@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as vscode from "vscode";
 import { MiniMaxClient, type ChatOptions } from "../api/MiniMaxClient";
 import { MiniMaxError } from "../api/MiniMaxError";
@@ -57,7 +58,11 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
 
   private readonly modelApiKeys = new Map<string, string>();
 
-  private availableModels: readonly ModelInfo[];
+  private availableModels: readonly ModelInfo[] = [];
+  private catalogScope: string | undefined;
+  private refreshGeneration = 0;
+  private lastCatalogWarning: string | undefined;
+  private readonly catalogOutput = vscode.window.createOutputChannel("MiniMax");
   private devCache: ModelsDevCache | undefined;
   /** The key VS Code hands us (Manage Models); requests use it, so refreshes do too. */
   private refreshKey: string | undefined;
@@ -69,9 +74,6 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     private readonly tokenCounter: TokenCounter,
     private readonly context: vscode.ExtensionContext,
   ) {
-    const persisted = readPersistedCatalog(context.globalState);
-    this.availableModels = persisted.models;
-    this.devCache = persisted.devCache;
     void this.refreshModels();
     this.refreshTimer = setInterval(() => {
       void this.refreshModels();
@@ -79,7 +81,9 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
   }
 
   dispose(): void {
+    ++this.refreshGeneration;
     clearInterval(this.refreshTimer);
+    this.catalogOutput.dispose();
     this.modelsChangedEmitter.dispose();
   }
 
@@ -90,27 +94,46 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     let apiKey = this.refreshKey;
     try {
       apiKey ??= await this.authManager.getApiKey();
+      apiKey = this.refreshKey ?? apiKey;
     } catch {
       return;
     }
     if (!apiKey || apiKey.trim().length === 0) {
       return;
     }
-    const baseUrl = getApiBaseUrl() ?? DEFAULT_API_BASE_URL;
+    const baseUrl = (getApiBaseUrl() ?? DEFAULT_API_BASE_URL).replace(/\/+$/, "");
+    const scope = catalogScope(baseUrl, apiKey.trim());
+    const generation = ++this.refreshGeneration;
+    if (scope !== this.catalogScope) {
+      this.catalogScope = scope;
+      const persisted = readPersistedCatalog(this.context.globalState, scope);
+      this.availableModels = persisted.models;
+      this.devCache = persisted.devCache;
+      this.modelApiKeys.clear();
+      this.notifyModelsChanged();
+    }
     let live: LiveModelEntry[];
     try {
       live = await fetchLiveModelCatalog(baseUrl, apiKey.trim());
-    } catch {
+    } catch (error) {
+      if (generation === this.refreshGeneration) {
+        this.reportCatalogWarning("Could not refresh the MiniMax model list", baseUrl, error);
+      }
       return;
     }
+    if (generation !== this.refreshGeneration) return;
     const ids = live.map((entry) => entry.id);
     let nextDevCache: ModelsDevCache;
     try {
       nextDevCache = await resolveModelsDev(baseUrl, ids, this.devCache);
-    } catch {
-      // models.dev failed: keep the previous catalog, do not invent data.
-      return;
+      if (generation === this.refreshGeneration) this.lastCatalogWarning = undefined;
+    } catch (error) {
+      if (generation !== this.refreshGeneration) return;
+      // Metadata enrichment must never veto the authoritative live model ids.
+      nextDevCache = this.devCache ?? { models: {} };
+      this.reportCatalogWarning("Could not refresh models.dev metadata; using cached metadata or default limits for live models", baseUrl, error);
     }
+    if (generation !== this.refreshGeneration) return;
     const byId = new Map(live.map((entry) => [entry.id, entry]));
     const built: ModelInfo[] = [];
     const defaultedIds: string[] = [];
@@ -152,6 +175,7 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     if (defaultedIds.length > 0) {
       console.info(`[minimax] Using default limits for: ${defaultedIds.join(", ")}.`);
     }
+    this.catalogOutput.appendLine(`Loaded ${built.length} live chat models from ${baseUrl}/models.`);
     this.devCache = nextDevCache;
     if (JSON.stringify(built) === JSON.stringify(this.availableModels)) {
       return;
@@ -159,29 +183,39 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     this.availableModels = built;
     try {
       await this.context.globalState.update(MODEL_CATALOG_CACHE_KEY, {
+        scope,
         devCache: nextDevCache,
         models: built,
       });
     } catch {
       // Cache is best-effort; the in-memory list is already updated.
     }
-    this.notifyModelsChanged();
+    if (generation === this.refreshGeneration) this.notifyModelsChanged();
+  }
+
+  private reportCatalogWarning(message: string, baseUrl: string, error: unknown): void {
+    // Never log response bodies or raw network errors: they may contain credentials.
+    const status = error instanceof Error ? /HTTP (\d{3})/.exec(error.message)?.[1] : undefined;
+    const warning = `${message}${status ? ` (HTTP ${status})` : ""}. Check minimax.apiBaseUrl, the matching region's M Plan Subscription Key, and network access. See Output > MiniMax.`;
+    this.catalogOutput.appendLine(`${message} at ${baseUrl}${status ? ` (HTTP ${status})` : ""}.`);
+    if (this.lastCatalogWarning !== warning) {
+      this.lastCatalogWarning = warning;
+      void vscode.window.showWarningMessage(warning);
+    }
   }
 
   notifyModelsChanged(): void {
     this.modelsChangedEmitter.fire();
   }
 
-  /** Refresh with the key in use; with no catalog yet (first run), wait so the picker is not empty. */
+  /** Refresh and await a changed account/endpoint before serving its catalog. */
   private async syncCatalog(apiKey: string): Promise<void> {
-    if (apiKey === this.refreshKey && this.availableModels.length > 0) {
+    const baseUrl = getApiBaseUrl() ?? DEFAULT_API_BASE_URL;
+    if (catalogScope(baseUrl, apiKey) === this.catalogScope && apiKey === this.refreshKey && this.availableModels.length > 0) {
       return;
     }
     this.refreshKey = apiKey;
-    const refresh = this.refreshModels();
-    if (this.availableModels.length === 0) {
-      await refresh;
-    }
+    await this.refreshModels();
   }
 
   async provideLanguageModelChatInformation(
@@ -197,6 +231,10 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
     }
 
     await this.syncCatalog(configuredApiKey);
+    // An overlapping request for another account/region may have superseded us.
+    if (this.catalogScope !== catalogScope(getApiBaseUrl() ?? DEFAULT_API_BASE_URL, configuredApiKey)) {
+      return [];
+    }
     const models = modelsWithApiKey(this.availableModels);
     this.modelApiKeys.clear();
     for (const model of models) {
@@ -415,19 +453,26 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
   }
 }
 
-const MODEL_CATALOG_CACHE_KEY = "minimax.modelCatalog.v2";
+const MODEL_CATALOG_CACHE_KEY = "minimax.modelCatalog.v3";
+
+function catalogScope(baseUrl: string, apiKey: string): string {
+  // Bind the cache to the endpoint AND account without persisting the API key.
+  return createHash("sha256").update(JSON.stringify([baseUrl.trim().replace(/\/+$/, ""), apiKey.trim()])).digest("hex");
+}
 
 interface PersistedCatalog {
+  scope?: string;
   devCache?: unknown;
   models?: unknown;
 }
 
-function readPersistedCatalog(globalState: vscode.Memento): {
+function readPersistedCatalog(globalState: vscode.Memento, scope: string): {
   devCache: ModelsDevCache | undefined;
   models: ModelInfo[];
 } {
   try {
     const cached = globalState.get<PersistedCatalog>(MODEL_CATALOG_CACHE_KEY);
+    if (cached?.scope !== scope) return { devCache: undefined, models: [] };
     const devCache = isValidDevCache(cached?.devCache) ? cached.devCache : undefined;
     const models = Array.isArray(cached?.models)
       ? cached.models.filter(isValidPersistedModel)

@@ -147,6 +147,7 @@ export async function fetchLiveModelCatalog(
   }
   const response = await fetchFn(`${normalizedBase}/models`, {
     method: "GET",
+    signal: AbortSignal.timeout(20_000),
     headers: {
       Authorization: `Bearer ${apiKey}`,
       Accept: "application/json",
