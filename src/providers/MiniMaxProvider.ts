@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { MiniMaxClient, type ChatOptions } from "../api/MiniMaxClient";
 import { MiniMaxError } from "../api/MiniMaxError";
 import {
+  isChatModelId,
   DEFAULT_API_BASE_URL,
   fetchLiveModelCatalog,
   humanizeModelId,
@@ -122,10 +123,9 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
       return;
     }
     if (generation !== this.refreshGeneration) return;
-    const ids = live.map((entry) => entry.id);
     let nextDevCache: ModelsDevCache;
     try {
-      nextDevCache = await resolveModelsDev(baseUrl, ids, this.devCache);
+      nextDevCache = await resolveModelsDev(baseUrl, live.map((entry) => entry.id), this.devCache);
       if (generation === this.refreshGeneration) this.lastCatalogWarning = undefined;
     } catch (error) {
       if (generation !== this.refreshGeneration) return;
@@ -134,14 +134,13 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider, vscode
       this.reportCatalogWarning("Could not refresh models.dev metadata; using cached metadata or default limits for live models", baseUrl, error);
     }
     if (generation !== this.refreshGeneration) return;
+    // Newer models MiniMax serves before its /models lists them come first, as the newest.
+    const ids = [...(nextDevCache.extra ?? []).filter(isChatModelId), ...live.map((entry) => entry.id)];
     const byId = new Map(live.map((entry) => [entry.id, entry]));
     const built: ModelInfo[] = [];
     const defaultedIds: string[] = [];
     for (const id of ids) {
-      const entry = byId.get(id);
-      if (!entry) {
-        continue;
-      }
+      const entry: LiveModelEntry = byId.get(id) ?? { id };
       const dev = nextDevCache.models[id] ?? undefined;
       // A model MiniMax lists before models.dev catalogs it still shows up, with safe limits, corrected on the next refresh once models.dev knows it.
       let context = entry.context_window ?? dev?.limit?.context;

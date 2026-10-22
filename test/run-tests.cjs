@@ -230,3 +230,17 @@ test('metadata recovery replaces default limits without waiting for a new model 
   assert.equal(model.maxOutputTokens, 512000);
   assert.equal(model.capabilities.imageInput, true);
 });
+
+test('a model models.dev lists for this API, newer than anything /models returns, shows up first; a released model hides its preview', async () => {
+  reset();
+  const dev = (id, release_date) => ({ id, name: id, release_date, tool_call: true, limit: { context: 1000000, output: 524288 }, modalities: { input: ['text'], output: ['text'] } });
+  const metadata = { minimax: { api: 'https://api.minimax.io/anthropic/v1', models: {
+    [OLD]: dev(OLD, '2026-06-01'), 'MiniMax-M3.1-Flash': dev('MiniMax-M3.1-Flash', '2026-10-19'), [FLASH]: dev(FLASH, '2026-09-27'), 'MiniMax-M2.1': dev('MiniMax-M2.1', '2025-12-23'),
+  } }, other: { api: 'https://api.example.com/v1', models: { 'other-model': dev('other-model', '2026-12-01') } } };
+  routes([{ id: OLD }], metadata);
+  const lagging = (await list(await provider())).map((model) => model.id);
+  assert.deepEqual(lagging, ['MiniMax-M3.1-Flash', OLD], 'M3.1 Flash is added; its preview, an older model and another API\'s model are not');
+  routes([{ id: 'MiniMax-M3.1-Flash' }, { id: OLD }], metadata);
+  const caughtUp = (await list(await provider(), 'other-key')).map((model) => model.id);
+  assert.deepEqual(caughtUp, ['MiniMax-M3.1-Flash', OLD], 'once /models lists it, nothing is added twice');
+});
